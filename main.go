@@ -16,7 +16,7 @@ import (
 func enableCors(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:5173")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
 		if r.Method == "OPTIONS" {
@@ -49,6 +49,7 @@ const (
 	Accessories Category = "accessories"
 )
 
+// Add quantity field to Item struct
 type Item struct {
 	ID          string    `json:"id"`
 	Title       string    `json:"title"`
@@ -59,6 +60,12 @@ type Item struct {
 	Images      []string  `json:"images"`
 	CreatedAt   time.Time `json:"created_at"`
 	Status      string    `json:"status"`
+	Quantity    int       `json:"quantity"` // Add this field
+}
+
+var req struct {
+	UserID string `json:"user_id"`
+	ItemID string `json:"item_id"`
 }
 
 type CartItem struct {
@@ -138,6 +145,7 @@ func createItemWithImagesHandler(w http.ResponseWriter, r *http.Request) {
 	item.CreatedAt = time.Now()
 	item.Status = "available"
 	item.Images = imagePaths
+	item.Quantity = 1
 
 	items[item.ID] = item
 	sendJSON(w, item)
@@ -245,6 +253,26 @@ func addToCartHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if item exists and has available quantity
+	item, exists := items[req.ItemID]
+	if !exists {
+		http.Error(w, "Item not found", http.StatusNotFound)
+		return
+	}
+
+	// Count how many times this item is in the user's cart
+	itemCount := 0
+	for _, cartItem := range cart[req.UserID] {
+		if cartItem.ItemID == req.ItemID {
+			itemCount++
+		}
+	}
+
+	if itemCount >= item.Quantity {
+		http.Error(w, "Item out of stock", http.StatusBadRequest)
+		return
+	}
+
 	cartItem := CartItem{
 		ItemID:  req.ItemID,
 		AddedAt: time.Now(),
@@ -273,6 +301,33 @@ func viewCartHandler(w http.ResponseWriter, r *http.Request) {
 	sendJSON(w, cartItems)
 }
 
+func removeFromCartHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		UserID string `json:"user_id"`
+		ItemID string `json:"item_id"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	userCart := cart[req.UserID]
+	for i, item := range userCart {
+		if item.ItemID == req.ItemID {
+			cart[req.UserID] = append(userCart[:i], userCart[i+1:]...)
+			break
+		}
+	}
+
+	sendJSON(w, cart[req.UserID])
+}
+
 func serveImageHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -284,12 +339,21 @@ func serveImageHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	// Initialize quantities
+	for id, item := range items {
+		if item.Quantity == 0 {
+			item.Quantity = 1
+			items[id] = item
+		}
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/items/create", enableCors(createItemWithImagesHandler))
 	mux.HandleFunc("/items/search", enableCors(searchItemsHandler))
 	mux.HandleFunc("/cart/add", enableCors(addToCartHandler))
 	mux.HandleFunc("/cart", enableCors(viewCartHandler))
 	mux.HandleFunc("/images", enableCors(serveImageHandler))
+	mux.HandleFunc("/cart/remove", enableCors(removeFromCartHandler))
 
 	log.Println("Server starting on :8080")
 	log.Fatal(http.ListenAndServe(":8080", mux))

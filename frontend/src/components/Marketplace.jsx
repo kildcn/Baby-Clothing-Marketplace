@@ -2,18 +2,27 @@ import { useState, useEffect } from 'react';
 
 export default function Marketplace() {
   const [items, setItems] = useState([]);
+  const [cartItems, setCartItems] = useState([]); // Initialize as empty array
   const [searchQuery, setSearchQuery] = useState('');
   const [category, setCategory] = useState('');
   const [size, setSize] = useState('');
-  const [sortBy, setSortBy] = useState(''); // new sort state
-  const [priceRange, setPriceRange] = useState({ min: '', max: '' }); // new price filter
+  const [sortBy, setSortBy] = useState('');
+  const [priceRange, setPriceRange] = useState({ min: '', max: '' });
+  const [showCart, setShowCart] = useState(false);
 
   const categories = ['tops', 'bottoms', 'outerwear', 'footwear', 'accessories'];
   const sizes = ['XS', 'S', 'M', 'L', 'XL'];
 
-  useEffect(() => {
-    fetchItems();
-  }, [searchQuery, category, size, sortBy, priceRange]);
+  const fetchCart = async () => {
+    try {
+      const response = await fetch('http://localhost:8080/cart?user_id=123');
+      const data = await response.json();
+      setCartItems(data || []); // Ensure we always set an array
+    } catch (error) {
+      console.error('Error fetching cart:', error);
+      setCartItems([]); // Set empty array on error
+    }
+  };
 
   const fetchItems = async () => {
     const params = new URLSearchParams({
@@ -27,10 +36,8 @@ export default function Marketplace() {
       let response = await fetch(`http://localhost:8080/items/search?${params}`);
       let data = await response.json();
 
-      // Check if data is null or undefined
       if (!data) data = [];
 
-      // Client-side sorting
       if (sortBy && data.length > 0) {
         data = sortItems(data, sortBy);
       }
@@ -38,8 +45,57 @@ export default function Marketplace() {
       setItems(data);
     } catch (error) {
       console.error('Error fetching items:', error);
-      setItems([]); // Set empty array on error
+      setItems([]);
     }
+  };
+
+  const addToCart = async (itemId) => {
+    try {
+      const response = await fetch('http://localhost:8080/cart/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: '123', item_id: itemId })
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        alert(error);
+        return;
+      }
+
+      fetchCart();
+    } catch (error) {
+      console.error('Error adding to cart:', error);
+    }
+  };
+
+  const removeFromCart = async (itemId) => {
+    try {
+      const response = await fetch('http://localhost:8080/cart/remove', {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          user_id: '123',
+          item_id: itemId
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to remove item from cart');
+      }
+
+      fetchCart();
+    } catch (error) {
+      console.error('Error removing from cart:', error);
+    }
+  };
+
+  const handleCheckout = async () => {
+    alert('Thank you for your purchase!');
+    setCartItems([]);
+    setShowCart(false);
   };
 
   const sortItems = (items, sortType) => {
@@ -57,8 +113,73 @@ export default function Marketplace() {
     });
   };
 
+  useEffect(() => {
+    fetchItems();
+  }, [searchQuery, category, size, sortBy, priceRange]);
+
+  useEffect(() => {
+    fetchCart();
+  }, []);
+
+  const CartView = () => (
+    <div className="fixed right-0 top-0 h-full w-80 bg-white shadow-lg p-4 overflow-y-auto z-50">
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-xl font-bold">Shopping Cart</h2>
+        <button
+          onClick={() => setShowCart(false)}
+          className="text-gray-500 hover:text-gray-700"
+        >
+          Close
+        </button>
+      </div>
+
+      {cartItems.length === 0 ? (
+        <p>Your cart is empty</p>
+      ) : (
+        <>
+          {cartItems.map((item, index) => (
+            <div key={`${item.id}-${index}`} className="border-b py-2">
+              <div className="flex justify-between items-center">
+                <div>
+                  <h3 className="font-bold">{item.title}</h3>
+                  <p className="text-gray-600">${item.price}</p>
+                </div>
+                <button
+                  onClick={() => removeFromCart(item.id)}
+                  className="text-red-500 hover:text-red-700 px-2"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+          ))}
+          <div className="mt-4">
+            <p className="font-bold">
+              Total: ${cartItems.reduce((sum, item) => sum + item.price, 0).toFixed(2)}
+            </p>
+            <button
+              onClick={handleCheckout}
+              className="w-full bg-green-500 text-white py-2 rounded mt-2 hover:bg-green-600"
+            >
+              Checkout
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+
   return (
     <div className="container mx-auto p-4">
+      <button
+        onClick={() => setShowCart(true)}
+        className="fixed top-4 right-4 bg-blue-500 text-white px-4 py-2 rounded z-40"
+      >
+        Cart ({cartItems.length})
+      </button>
+
+      {showCart && <CartView />}
+
       <div className="mb-8 bg-white shadow-lg rounded-lg p-6">
         <h1 className="text-3xl font-bold mb-6">Unisex Clothes Marketplace</h1>
 
