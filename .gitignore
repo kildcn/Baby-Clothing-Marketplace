@@ -1,0 +1,12 @@
+# Go
+/uploads
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Node/React
+node_modules/
+dist/
+.env
+.env.local
