@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,21 +13,6 @@ import (
 	"strings"
 	"time"
 )
-
-func enableCors(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:5173")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		next(w, r)
-	}
-}
 
 // Type definitions
 type Size string
@@ -49,7 +35,6 @@ const (
 	Accessories Category = "accessories"
 )
 
-// Add quantity field to Item struct
 type Item struct {
 	ID          string    `json:"id"`
 	Title       string    `json:"title"`
@@ -60,12 +45,9 @@ type Item struct {
 	Images      []string  `json:"images"`
 	CreatedAt   time.Time `json:"created_at"`
 	Status      string    `json:"status"`
-	Quantity    int       `json:"quantity"` // Add this field
-}
-
-var req struct {
-	UserID string `json:"user_id"`
-	ItemID string `json:"item_id"`
+	Quantity    int       `json:"quantity"`
+	SellerID    string    `json:"seller_id"`
+	SellerName  string    `json:"seller_name"`
 }
 
 type CartItem struct {
@@ -73,21 +55,28 @@ type CartItem struct {
 	AddedAt time.Time `json:"added_at"`
 }
 
+type Order struct {
+	ID        string    `json:"id"`
+	UserID    string    `json:"user_id"`
+	Items     []Item    `json:"items"`
+	Total     float64   `json:"total"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+	Address   string    `json:"address"`
+}
+
+type User struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 // Storage
 var (
-	items = make(map[string]Item)
-	cart  = make(map[string][]CartItem) // user_id -> cart items
+	items  = make(map[string]Item)
+	cart   = make(map[string][]CartItem)
+	orders = make(map[string]Order)
+	users  = make(map[string]User)
 )
-
-// Helper functions
-func generateID() string {
-	return fmt.Sprintf("%d", time.Now().UnixNano())
-}
-
-func sendJSON(w http.ResponseWriter, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(data)
-}
 
 func parseFloat(s string) float64 {
 	var f float64
@@ -106,6 +95,13 @@ const (
 func createItemWithImagesHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Get userID from context
+	userID, ok := getUserIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
@@ -146,6 +142,12 @@ func createItemWithImagesHandler(w http.ResponseWriter, r *http.Request) {
 	item.Status = "available"
 	item.Images = imagePaths
 	item.Quantity = 1
+	item.SellerID = userID
+
+	// Get seller name from users map
+	if seller, exists := users[userID]; exists {
+		item.SellerName = seller.Name
+	}
 
 	items[item.ID] = item
 	sendJSON(w, item)
@@ -243,8 +245,13 @@ func addToCartHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID, ok := getUserIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	var req struct {
-		UserID string `json:"user_id"`
 		ItemID string `json:"item_id"`
 	}
 
@@ -262,7 +269,7 @@ func addToCartHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Count how many times this item is in the user's cart
 	itemCount := 0
-	for _, cartItem := range cart[req.UserID] {
+	for _, cartItem := range cart[userID] {
 		if cartItem.ItemID == req.ItemID {
 			itemCount++
 		}
@@ -278,8 +285,8 @@ func addToCartHandler(w http.ResponseWriter, r *http.Request) {
 		AddedAt: time.Now(),
 	}
 
-	cart[req.UserID] = append(cart[req.UserID], cartItem)
-	sendJSON(w, cart[req.UserID])
+	cart[userID] = append(cart[userID], cartItem)
+	sendJSON(w, cart[userID])
 }
 
 func viewCartHandler(w http.ResponseWriter, r *http.Request) {
@@ -288,7 +295,12 @@ func viewCartHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID := r.URL.Query().Get("user_id")
+	userID, ok := getUserIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	userCart := cart[userID]
 
 	var cartItems []Item
@@ -307,8 +319,13 @@ func removeFromCartHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID, ok := getUserIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	var req struct {
-		UserID string `json:"user_id"`
 		ItemID string `json:"item_id"`
 	}
 
@@ -317,15 +334,15 @@ func removeFromCartHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userCart := cart[req.UserID]
+	userCart := cart[userID]
 	for i, item := range userCart {
 		if item.ItemID == req.ItemID {
-			cart[req.UserID] = append(userCart[:i], userCart[i+1:]...)
+			cart[userID] = append(userCart[:i], userCart[i+1:]...)
 			break
 		}
 	}
 
-	sendJSON(w, cart[req.UserID])
+	sendJSON(w, cart[userID])
 }
 
 func serveImageHandler(w http.ResponseWriter, r *http.Request) {
@@ -338,6 +355,47 @@ func serveImageHandler(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, imagePath)
 }
 
+func getUserIDFromContext(ctx context.Context) (string, bool) {
+	userID, ok := ctx.Value("userID").(string)
+	return userID, ok
+}
+
+func generateID() string {
+	return fmt.Sprintf("item-%d", len(items)+1)
+}
+
+func sendJSON(w http.ResponseWriter, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(data)
+}
+
+func enableCors(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
+		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
+		if r.Method == "OPTIONS" {
+			return
+		}
+		h(w, r)
+	}
+}
+
+func authMiddleware(h http.HandlerFunc) http.HandlerFunc {
+	return enableCors(func(w http.ResponseWriter, r *http.Request) {
+		// Implement this middleware to handle authentication
+		h(w, r)
+	})
+}
+
+func signupHandler(w http.ResponseWriter, r *http.Request) {
+	// Implement this handler to handle user signup
+}
+
+func loginHandler(w http.ResponseWriter, r *http.Request) {
+	// Implement this handler to handle user login
+}
+
 func main() {
 	// Initialize quantities
 	for id, item := range items {
@@ -348,12 +406,20 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/items/create", enableCors(createItemWithImagesHandler))
+
+	// Auth routes
+	mux.HandleFunc("/signup", enableCors(signupHandler))
+	mux.HandleFunc("/login", enableCors(loginHandler))
+
+	// Protected routes with auth middleware
+	mux.HandleFunc("/items/create", authMiddleware(createItemWithImagesHandler))
+	mux.HandleFunc("/cart/add", authMiddleware(addToCartHandler))
+	mux.HandleFunc("/cart", authMiddleware(viewCartHandler))
+	mux.HandleFunc("/cart/remove", authMiddleware(removeFromCartHandler))
+
+	// Public routes
 	mux.HandleFunc("/items/search", enableCors(searchItemsHandler))
-	mux.HandleFunc("/cart/add", enableCors(addToCartHandler))
-	mux.HandleFunc("/cart", enableCors(viewCartHandler))
 	mux.HandleFunc("/images", enableCors(serveImageHandler))
-	mux.HandleFunc("/cart/remove", enableCors(removeFromCartHandler))
 
 	log.Println("Server starting on :8080")
 	log.Fatal(http.ListenAndServe(":8080", mux))
