@@ -12,9 +12,27 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // Type definitions
+
+type Credentials struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+	Name     string `json:"name,omitempty"`
+}
+
+// Update the User struct to include email and password
+type User struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Email    string `json:"email"`
+	Password string `json:"-"` // "-" means this won't be sent in JSON responses
+}
+
 type Size string
 
 const (
@@ -65,11 +83,6 @@ type Order struct {
 	Address   string    `json:"address"`
 }
 
-type User struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-}
-
 // Storage
 var (
 	items  = make(map[string]Item)
@@ -92,6 +105,25 @@ const (
 )
 
 // Handlers
+
+func hashPassword(password string) (string, error) {
+	bytes, err := bcrypt.GenerateFromPassword([]byte(password), 14)
+	return string(bytes), err
+}
+
+func checkPasswordHash(password, hash string) bool {
+	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+	return err == nil
+}
+
+func generateToken(userID string) (string, error) {
+	token := jwt.New(jwt.SigningMethodHS256)
+	claims := token.Claims.(jwt.MapClaims)
+	claims["user_id"] = userID
+	claims["exp"] = time.Now().Add(time.Hour * 72).Unix()
+	return token.SignedString([]byte("your-secret-key"))
+}
+
 func createItemWithImagesHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -137,7 +169,7 @@ func createItemWithImagesHandler(w http.ResponseWriter, r *http.Request) {
 		imagePaths = append(imagePaths, imagePath)
 	}
 
-	item.ID = generateID()
+	item.ID = generateItemID()
 	item.CreatedAt = time.Now()
 	item.Status = "available"
 	item.Images = imagePaths
@@ -164,7 +196,7 @@ func saveImage(fileHeader *multipart.FileHeader) (string, error) {
 		return "", err
 	}
 
-	filename := filepath.Join(uploadDir, generateID()+filepath.Ext(fileHeader.Filename))
+	filename := filepath.Join(uploadDir, generateItemID()+filepath.Ext(fileHeader.Filename))
 
 	dst, err := os.Create(filename)
 	if err != nil {
@@ -360,21 +392,31 @@ func getUserIDFromContext(ctx context.Context) (string, bool) {
 	return userID, ok
 }
 
-func generateID() string {
-	return fmt.Sprintf("item-%d", len(items)+1)
+func generateUserID() string {
+	return fmt.Sprintf("user-%d", time.Now().UnixNano())
+}
+
+func generateItemID() string {
+	return fmt.Sprintf("item-%d", time.Now().UnixNano())
 }
 
 func sendJSON(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(data)
+
+	err := json.NewEncoder(w).Encode(data)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 }
 
 func enableCors(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:5173")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
 		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
 		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
 			return
 		}
 		h(w, r)
@@ -383,17 +425,135 @@ func enableCors(h http.HandlerFunc) http.HandlerFunc {
 
 func authMiddleware(h http.HandlerFunc) http.HandlerFunc {
 	return enableCors(func(w http.ResponseWriter, r *http.Request) {
-		// Implement this middleware to handle authentication
+		tokenString := r.Header.Get("Authorization")
+		if tokenString == "" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		// Remove 'Bearer ' prefix if present
+		tokenString = strings.Replace(tokenString, "Bearer ", "", 1)
+
+		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method")
+			}
+			return []byte("your-secret-key"), nil
+		})
+
+		if err != nil || !token.Valid {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		claims, ok := token.Claims.(jwt.MapClaims)
+		if !ok {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		userID, ok := claims["user_id"].(string)
+		if !ok {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		// Add user ID to request context
+		r = r.WithContext(context.WithValue(r.Context(), "userID", userID))
 		h(w, r)
 	})
 }
 
 func signupHandler(w http.ResponseWriter, r *http.Request) {
-	// Implement this handler to handle user signup
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var creds Credentials
+	if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Check if user already exists
+	for _, u := range users {
+		if u.Email == creds.Email {
+			http.Error(w, "User already exists", http.StatusBadRequest)
+			return
+		}
+	}
+
+	hashedPassword, err := hashPassword(creds.Password)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	user := User{
+		ID:       generateUserID(),
+		Email:    creds.Email,
+		Name:     creds.Name,
+		Password: hashedPassword,
+	}
+
+	users[user.ID] = user
+
+	token, err := generateToken(user.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"token":   token,
+		"user_id": user.ID,
+		"name":    user.Name,
+		"email":   user.Email,
+	})
 }
 
 func loginHandler(w http.ResponseWriter, r *http.Request) {
-	// Implement this handler to handle user login
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var creds Credentials
+	if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Find user with matching email
+	var user User
+	var found bool
+	for _, u := range users {
+		if u.Email == creds.Email {
+			user = u
+			found = true
+			break
+		}
+	}
+
+	if !found || !checkPasswordHash(creds.Password, user.Password) {
+		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+		return
+	}
+
+	token, err := generateToken(user.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"token":   token,
+		"user_id": user.ID,
+		"name":    user.Name,
+	})
 }
 
 func main() {

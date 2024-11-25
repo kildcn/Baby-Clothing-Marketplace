@@ -33,12 +33,27 @@ export default function Marketplace() {
         body: JSON.stringify(signupData)
       });
 
+      if (!response.ok) {
+        const errorData = await response.text();
+        throw new Error(errorData || 'Signup failed');
+      }
+
       const data = await response.json();
+
+      if (!data.token) {
+        throw new Error('No token received');
+      }
+
       localStorage.setItem('token', data.token);
+      localStorage.setItem('user_id', data.user_id);
+      localStorage.setItem('name', data.name);
+      localStorage.setItem('email', data.email);
       setToken(data.token);
+      setCurrentUser({ id: data.user_id, name: data.name, email: data.email });
       setShowSignup(false);
       alert('Signup successful!');
     } catch (error) {
+      console.error('Signup error:', error);
       alert('Signup failed: ' + error.message);
     }
   };
@@ -180,168 +195,6 @@ export default function Marketplace() {
     }
   }, [token]);
 
-  // Component renders
-  const LoginForm = () => (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white p-8 rounded-lg shadow-xl max-w-md w-full">
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="text-2xl font-bold">Login</h2>
-          <button onClick={() => setShowLogin(false)} className="text-gray-500">×</button>
-        </div>
-        <form onSubmit={login} className="space-y-4">
-          <div>
-            <label className="block mb-1">Email</label>
-            <input
-              type="email"
-              className="w-full border rounded p-2"
-              value={loginData.email}
-              onChange={e => setLoginData({...loginData, email: e.target.value})}
-              required
-            />
-          </div>
-          <div>
-            <label className="block mb-1">Password</label>
-            <input
-              type="password"
-              className="w-full border rounded p-2"
-              value={loginData.password}
-              onChange={e => setLoginData({...loginData, password: e.target.value})}
-              required
-            />
-          </div>
-          <button type="submit" className="w-full bg-blue-500 text-white py-2 rounded">
-            Login
-          </button>
-          <p className="text-center text-sm">
-            Don't have an account?{' '}
-            <button
-              type="button"
-              onClick={() => {
-                setShowLogin(false);
-                setShowSignup(true);
-              }}
-              className="text-blue-500"
-            >
-              Sign up
-            </button>
-          </p>
-        </form>
-      </div>
-    </div>
-  );
-
-  const SignupForm = () => (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white p-8 rounded-lg shadow-xl max-w-md w-full">
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="text-2xl font-bold">Sign Up</h2>
-          <button onClick={() => setShowSignup(false)} className="text-gray-500">×</button>
-        </div>
-        <form onSubmit={signup} className="space-y-4">
-          <div>
-            <label className="block mb-1">Name</label>
-            <input
-              type="text"
-              className="w-full border rounded p-2"
-              value={signupData.name}
-              onChange={e => setSignupData({...signupData, name: e.target.value})}
-              required
-            />
-          </div>
-          <div>
-            <label className="block mb-1">Email</label>
-            <input
-              type="email"
-              className="w-full border rounded p-2"
-              value={signupData.email}
-              onChange={e => setSignupData({...signupData, email: e.target.value})}
-              required
-            />
-          </div>
-          <div>
-            <label className="block mb-1">Password</label>
-            <input
-              type="password"
-              className="w-full border rounded p-2"
-              value={signupData.password}
-              onChange={e => setSignupData({...signupData, password: e.target.value})}
-              required
-            />
-          </div>
-          <button type="submit" className="w-full bg-blue-500 text-white py-2 rounded">
-            Sign Up
-          </button>
-          <p className="text-center text-sm">
-            Already have an account?{' '}
-            <button
-              type="button"
-              onClick={() => {
-                setShowSignup(false);
-                setShowLogin(true);
-              }}
-              className="text-blue-500"
-            >
-              Login
-            </button>
-          </p>
-        </form>
-      </div>
-    </div>
-  );
-
-  const CartView = () => (
-    <div className="fixed right-0 top-0 h-full w-80 bg-white shadow-lg p-4 overflow-y-auto z-50">
-      <div className="flex justify-between items-center mb-4">
-        <h2 className="text-xl font-bold">Shopping Cart</h2>
-        <button onClick={() => setShowCart(false)} className="text-gray-500">
-          Close
-        </button>
-      </div>
-
-      {cartItems.length === 0 ? (
-        <p>Your cart is empty</p>
-      ) : (
-        <>
-          {cartItems.map((item, index) => (
-            <div key={`${item.id}-${index}`} className="border-b py-2">
-              <div className="flex justify-between items-center">
-                <div>
-                  <h3 className="font-bold">{item.title}</h3>
-                  <p className="text-gray-600">${item.price}</p>
-                </div>
-                <button
-                  onClick={() => removeFromCart(item.id)}
-                  className="text-red-500"
-                >
-                  ×
-                </button>
-              </div>
-            </div>
-          ))}
-          <div className="mt-4">
-            <p className="font-bold">
-              Total: ${cartItems.reduce((sum, item) => sum + item.price, 0).toFixed(2)}
-            </p>
-            <button
-              onClick={() => {
-                if (!token) {
-                  setShowLogin(true);
-                } else {
-                  alert('Thank you for your purchase!');
-                  setCartItems([]);
-                  setShowCart(false);
-                }
-              }}
-              className="w-full bg-green-500 text-white py-2 rounded mt-2"
-            >
-              Checkout
-            </button>
-          </div>
-        </>
-      )}
-    </div>
-  );
-
   return (
     <div className="container mx-auto p-4">
       {/* Header with auth buttons */}
@@ -445,36 +298,36 @@ export default function Marketplace() {
       </div>
 
       {/* Items grid */}
-<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-  {items.map(item => (
-    <div key={item.id} className="bg-white rounded-lg shadow-lg overflow-hidden">
-      {item.images && item.images.length > 0 && (
-        <img
-          src={`http://localhost:8080/images?path=${item.images[0]}`}
-          alt={item.title}
-          className="w-full h-64 object-cover"
-        />
-      )}
-      <div className="p-4">
-        <h2 className="text-xl font-bold mb-2">{item.title}</h2>
-        <p className="text-gray-600 mb-2">{item.description}</p>
-        <div className="flex justify-between items-center">
-          <span className="text-lg font-bold">${item.price}</span>
-          <div className="space-x-2">
-            <span className="bg-gray-200 px-2 py-1 rounded">{item.size}</span>
-            <span className="bg-gray-200 px-2 py-1 rounded">{item.category}</span>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {items.map(item => (
+          <div key={item.id} className="bg-white rounded-lg shadow-lg overflow-hidden">
+            {item.images && item.images.length > 0 && (
+              <img
+                src={`http://localhost:8080/images?path=${item.images[0]}`}
+                alt={item.title}
+                className="w-full h-64 object-cover"
+              />
+            )}
+            <div className="p-4">
+              <h2 className="text-xl font-bold mb-2">{item.title}</h2>
+              <p className="text-gray-600 mb-2">{item.description}</p>
+              <div className="flex justify-between items-center">
+                <span className="text-lg font-bold">${item.price}</span>
+                <div className="space-x-2">
+                  <span className="bg-gray-200 px-2 py-1 rounded">{item.size}</span>
+                  <span className="bg-gray-200 px-2 py-1 rounded">{item.category}</span>
+                </div>
+              </div>
+              <button
+                onClick={() => addToCart(item.id)}
+                className="mt-4 w-full bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
+              >
+                Add to Cart
+              </button>
+            </div>
           </div>
-        </div>
-        <button
-          onClick={() => addToCart(item.id)}
-          className="mt-4 w-full bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
-        >
-          Add to Cart
-        </button>
+        ))}
       </div>
-    </div>
-  ))}
-</div>
 
       {items.length === 0 && (
         <div className="text-center text-gray-500 mt-8">
@@ -482,10 +335,169 @@ export default function Marketplace() {
         </div>
       )}
 
-      {/* Modals */}
-      {showLogin && <LoginForm />}
-      {showSignup && <SignupForm />}
-      {showCart && <CartView />}
-    </div>
-  );
+      {/* Login Modal */}
+      {showLogin && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white p-8 rounded-lg shadow-xl max-w-md w-full">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-2xl font-bold">Login</h2>
+              <button onClick={() => setShowLogin(false)} className="text-gray-500">×</button>
+            </div>
+            <form onSubmit={login} className="space-y-4">
+              <div>
+                <label className="block mb-1">Email</label>
+                <input
+                  type="email"
+                  className="w-full border rounded p-2"
+                  value={loginData.email}
+                  onChange={e => setLoginData({...loginData, email: e.target.value})}
+                  required
+                />
+              </div>
+              <div>
+                <label className="block mb-1">Password</label>
+                <input
+                  type="password"
+                  className="w-full border rounded p-2"
+                  value={loginData.password}
+                  onChange={e => setLoginData({...loginData, password: e.target.value})}
+                  required
+                />
+              </div>
+              <button type="submit" className="w-full bg-blue-500 text-white py-2 rounded">
+                Login
+              </button>
+              <p className="text-center text-sm">
+                Don't have an account?{' '}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowLogin(false);
+                    setShowSignup(true);
+                  }}
+                  className="text-blue-500"
+                >
+                  Sign up
+                </button>
+              </p>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Signup Modal */}
+      {showSignup && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white p-8 rounded-lg shadow-xl max-w-md w-full">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-2xl font-bold">Sign Up</h2>
+              <button onClick={() => setShowSignup(false)} className="text-gray-500">×</button>
+            </div>
+            <form onSubmit={signup} className="space-y-4">
+              <div>
+                <label className="block mb-1">Name</label>
+                <input
+                  type="text"
+                  className="w-full border rounded p-2"
+                  value={signupData.name}
+                  onChange={e => setSignupData({...signupData, name: e.target.value})}
+                  required
+                />
+              </div>
+              <div>
+                <label className="block mb-1">Email</label>
+                <input
+                  type="email"
+                  className="w-full border rounded p-2"
+                  value={signupData.email}
+                  onChange={e => setSignupData({...signupData, email: e.target.value})}
+                  required
+                />
+              </div>
+              <div>
+                <label className="block mb-1">Password</label>
+                <input
+                  type="password"
+                  className="w-full border rounded p-2"
+                  value={signupData.password}
+                  onChange={e => setSignupData({...signupData, password: e.target.value})}
+                  required
+                />
+              </div>
+              <button type="submit" className="w-full bg-blue-500 text-white py-2 rounded">
+                Sign Up
+              </button>
+              <p className="text-center text-sm">
+                Already have an account?{' '}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowSignup(false);
+                    setShowLogin(true);
+                  }}
+                  className="text-blue-500"
+                >
+                  Login
+                </button>
+              </p>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Cart Modal */}
+     {showCart && (
+       <div className="fixed right-0 top-0 h-full w-80 bg-white shadow-lg p-4 overflow-y-auto z-50">
+         <div className="flex justify-between items-center mb-4">
+           <h2 className="text-xl font-bold">Shopping Cart</h2>
+           <button onClick={() => setShowCart(false)} className="text-gray-500">
+             Close
+           </button>
+         </div>
+
+         {cartItems.length === 0 ? (
+           <p>Your cart is empty</p>
+         ) : (
+           <>
+             {cartItems.map((item, index) => (
+               <div key={`${item.id}-${index}`} className="border-b py-2">
+                 <div className="flex justify-between items-center">
+                   <div>
+                     <h3 className="font-bold">{item.title}</h3>
+                     <p className="text-gray-600">${item.price}</p>
+                   </div>
+                   <button
+                     onClick={() => removeFromCart(item.id)}
+                     className="text-red-500"
+                   >
+                     ×
+                   </button>
+                 </div>
+               </div>
+             ))}
+             <div className="mt-4">
+               <p className="font-bold">
+                 Total: ${cartItems.reduce((sum, item) => sum + item.price, 0).toFixed(2)}
+               </p>
+               <button
+                 onClick={() => {
+                   if (!token) {
+                     setShowLogin(true);
+                   } else {
+                     alert('Thank you for your purchase!');
+                     setCartItems([]);
+                     setShowCart(false);
+                   }
+                 }}
+                 className="w-full bg-green-500 text-white py-2 rounded mt-2"
+               >
+                 Checkout
+               </button>
+             </div>
+           </>
+         )}
+       </div>
+     )}
+   </div>
+ );
 }

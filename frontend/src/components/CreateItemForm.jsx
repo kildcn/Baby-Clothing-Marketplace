@@ -14,40 +14,48 @@ export default function CreateItemForm() {
     e.preventDefault();
     const data = new FormData();
     const itemData = {
-        ...formData,
-        price: parseFloat(formData.price)
+      ...formData,
+      price: parseFloat(formData.price)
     };
     console.log('Form data being sent:', itemData);
     data.append('item', JSON.stringify(itemData));
 
     for (let image of images) {
-        console.log('Adding image:', image.name);
-        data.append('images', image);
+      console.log('Adding image:', image.name);
+      data.append('images', image);
     }
 
     try {
-        const response = await fetch('http://localhost:8080/items/create', {
-            method: 'POST',
-            body: data
-        });
-        const result = await response.text();
-        console.log('Server response:', result);
+      const token = localStorage.getItem('token');
+      const response = await fetch('http://localhost:8080/items/create', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
+        body: data
+      });
 
-        if (response.ok) {
-            alert('Item created successfully!');
-            setFormData({
-                title: '',
-                description: '',
-                price: '',
-                size: 'M',
-                category: 'tops'
-            });
-            setImages([]);
-        }
+      if (!response.ok) {
+        const errorData = await response.text();
+        throw new Error(errorData || 'Failed to create item');
+      }
+
+      const result = await response.json();
+      console.log('Server response:', result);
+      alert('Item created successfully!');
+      setFormData({
+        title: '',
+        description: '',
+        price: '',
+        size: 'M',
+        category: 'tops'
+      });
+      setImages([]);
     } catch (error) {
-        console.error('Error:', error);
+      console.error('Error:', error);
+      alert('Failed to create item: ' + error.message);
     }
-};
+  };
 
   return (
     <div className="max-w-md mx-auto bg-white p-6 rounded-lg shadow-lg">
