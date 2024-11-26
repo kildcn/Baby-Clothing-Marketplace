@@ -298,36 +298,50 @@ export default function Marketplace() {
       </div>
 
       {/* Items grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {items.map(item => (
-          <div key={item.id} className="bg-white rounded-lg shadow-lg overflow-hidden">
-            {item.images && item.images.length > 0 && (
-              <img
-                src={`http://localhost:8080/images?path=${item.images[0]}`}
-                alt={item.title}
-                className="w-full h-64 object-cover"
-              />
-            )}
-            <div className="p-4">
-              <h2 className="text-xl font-bold mb-2">{item.title}</h2>
-              <p className="text-gray-600 mb-2">{item.description}</p>
-              <div className="flex justify-between items-center">
-                <span className="text-lg font-bold">${item.price}</span>
-                <div className="space-x-2">
-                  <span className="bg-gray-200 px-2 py-1 rounded">{item.size}</span>
-                  <span className="bg-gray-200 px-2 py-1 rounded">{item.category}</span>
-                </div>
-              </div>
-              <button
-                onClick={() => addToCart(item.id)}
-                className="mt-4 w-full bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
-              >
-                Add to Cart
-              </button>
-            </div>
+<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+  {items.map(item => (
+    <div
+      key={item.id}
+      className={`bg-white rounded-lg shadow-lg overflow-hidden ${
+        item.quantity <= 0 ? 'opacity-50' : ''
+      }`}
+    >
+      {item.images && item.images.length > 0 && (
+        <img
+          src={`http://localhost:8080/images?path=${item.images[0]}`}
+          alt={item.title}
+          className="w-full h-64 object-cover"
+        />
+      )}
+      <div className="p-4">
+        <h2 className="text-xl font-bold mb-2">{item.title}</h2>
+        <p className="text-gray-600 mb-2">{item.description}</p>
+        <div className="flex justify-between items-center">
+          <span className="text-lg font-bold">${item.price}</span>
+          <div className="space-x-2">
+            <span className="bg-gray-200 px-2 py-1 rounded">{item.size}</span>
+            <span className="bg-gray-200 px-2 py-1 rounded">{item.category}</span>
           </div>
-        ))}
+        </div>
+        {item.quantity <= 0 ? (
+          <button
+            disabled
+            className="mt-4 w-full bg-gray-400 text-white px-4 py-2 rounded cursor-not-allowed"
+          >
+            Out of Stock
+          </button>
+        ) : (
+          <button
+            onClick={() => addToCart(item.id)}
+            className="mt-4 w-full bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
+          >
+            Add to Cart
+          </button>
+        )}
       </div>
+    </div>
+  ))}
+</div>
 
       {items.length === 0 && (
         <div className="text-center text-gray-500 mt-8">
