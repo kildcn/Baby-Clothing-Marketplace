@@ -197,41 +197,49 @@ export default function Marketplace() {
 
   return (
     <div className="container mx-auto p-4">
-      {/* Header with auth buttons */}
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-3xl font-bold">Unisex Clothes Marketplace</h1>
-        <div className="flex gap-4">
-          {token ? (
-            <button
-              onClick={logout}
-              className="bg-red-500 text-white px-4 py-2 rounded"
-            >
-              Logout
-            </button>
-          ) : (
-            <div className="flex gap-2">
-              <button
-                onClick={() => setShowLogin(true)}
-                className="bg-blue-500 text-white px-4 py-2 rounded"
-              >
-                Login
-              </button>
-              <button
-                onClick={() => setShowSignup(true)}
-                className="bg-green-500 text-white px-4 py-2 rounded"
-              >
-                Sign Up
-              </button>
+        {/* Header with auth buttons */}
+        <div className="flex justify-between items-center mb-6">
+            <h1 className="text-3xl font-bold">Unisex Clothes Marketplace</h1>
+            <div className="flex gap-4">
+                {token ? (
+                    <>
+                        <button
+                            onClick={() => window.location.href = '/dashboard'}
+                            className="bg-blue-500 text-white px-4 py-2 rounded"
+                        >
+                            Dashboard
+                        </button>
+                        <button
+                            onClick={logout}
+                            className="bg-red-500 text-white px-4 py-2 rounded"
+                        >
+                            Logout
+                        </button>
+                    </>
+                ) : (
+                    <div className="flex gap-2">
+                        <button
+                            onClick={() => setShowLogin(true)}
+                            className="bg-blue-500 text-white px-4 py-2 rounded"
+                        >
+                            Login
+                        </button>
+                        <button
+                            onClick={() => setShowSignup(true)}
+                            className="bg-green-500 text-white px-4 py-2 rounded"
+                        >
+                            Sign Up
+                        </button>
+                    </div>
+                )}
+                <button
+                    onClick={() => setShowCart(true)}
+                    className="bg-blue-500 text-white px-4 py-2 rounded"
+                >
+                    Cart ({cartItems.length})
+                </button>
             </div>
-          )}
-          <button
-            onClick={() => setShowCart(true)}
-            className="bg-blue-500 text-white px-4 py-2 rounded"
-          >
-            Cart ({cartItems.length})
-          </button>
         </div>
-      </div>
 
       {/* Search and filters */}
       <div className="mb-8 bg-white shadow-lg rounded-lg p-6">
@@ -317,12 +325,19 @@ export default function Marketplace() {
         <h2 className="text-xl font-bold mb-2">{item.title}</h2>
         <p className="text-gray-600 mb-2">{item.description}</p>
         <div className="flex justify-between items-center">
-          <span className="text-lg font-bold">${item.price}</span>
-          <div className="space-x-2">
-            <span className="bg-gray-200 px-2 py-1 rounded">{item.size}</span>
-            <span className="bg-gray-200 px-2 py-1 rounded">{item.category}</span>
-          </div>
-        </div>
+  <span className="text-lg font-bold">${item.price}</span>
+  <div className="flex flex-col items-end">
+    <div className="space-x-2">
+      <span className="bg-gray-200 px-2 py-1 rounded">{item.size}</span>
+      <span className="bg-gray-200 px-2 py-1 rounded">{item.category}</span>
+    </div>
+    <span className={`text-sm mt-1 ${
+      item.quantity <= 0 ? 'text-red-500' : 'text-green-500'
+    }`}>
+      {item.quantity <= 0 ? 'Out of Stock' : `${item.quantity} in stock`}
+    </span>
+  </div>
+</div>
         {item.quantity <= 0 ? (
           <button
             disabled
@@ -338,6 +353,7 @@ export default function Marketplace() {
             Add to Cart
           </button>
         )}
+
       </div>
     </div>
   ))}

@@ -230,13 +230,13 @@ func searchItemsHandler(w http.ResponseWriter, r *http.Request) {
 	maxPrice := r.URL.Query().Get("max_price")
 
 	sqlQuery := `
-		SELECT i.id, i.title, i.description, i.price, i.size, i.category,
-			   i.status, i.quantity, i.seller_id, u.name as seller_name,
-			   i.created_at, array_agg(im.image_path) as images
-		FROM items i
-		LEFT JOIN item_images im ON i.id = im.item_id
-		JOIN users u ON i.seller_id = u.id
-		WHERE 1=1`
+      SELECT i.id, i.title, i.description, i.price, i.size, i.category,
+             i.status, i.quantity, i.seller_id, u.name as seller_name,
+             i.created_at, array_agg(im.image_path) as images
+      FROM items i
+      LEFT JOIN item_images im ON i.id = im.item_id
+      JOIN users u ON i.seller_id = u.id
+      WHERE 1=1`
 
 	var params []interface{}
 	paramCount := 1
@@ -271,7 +271,10 @@ func searchItemsHandler(w http.ResponseWriter, r *http.Request) {
 		paramCount++
 	}
 
-	sqlQuery += ` GROUP BY i.id, u.name ORDER BY i.created_at DESC`
+	sqlQuery += ` GROUP BY i.id, u.name
+              ORDER BY
+                (CASE WHEN i.quantity > 0 THEN 0 ELSE 1 END),
+                i.created_at DESC`
 
 	rows, err := db.Query(sqlQuery, params...)
 	if err != nil {
@@ -593,6 +596,131 @@ func removeFromCartHandler(w http.ResponseWriter, r *http.Request) {
 	viewCartHandler(w, r)
 }
 
+// User dashboard handlers
+
+func getUserItemsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, _ := getUserIDFromContext(r.Context())
+
+	rows, err := db.Query(`
+      SELECT i.id, i.title, i.description, i.price, i.size, i.category,
+             i.status, i.quantity, i.seller_id, u.name as seller_name,
+             i.created_at, array_agg(im.image_path) as images
+      FROM items i
+      LEFT JOIN item_images im ON i.id = im.item_id
+      JOIN users u ON i.seller_id = u.id
+      WHERE i.seller_id = $1
+      GROUP BY i.id, u.name
+      ORDER BY i.created_at DESC`,
+		userID)
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var items []Item
+	for rows.Next() {
+		var item Item
+		var images []sql.NullString
+		err := rows.Scan(
+			&item.ID, &item.Title, &item.Description, &item.Price,
+			&item.Size, &item.Category, &item.Status, &item.Quantity,
+			&item.SellerID, &item.SellerName, &item.CreatedAt, pq.Array(&images))
+
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		item.Images = make([]string, 0)
+		for _, img := range images {
+			if img.Valid {
+				item.Images = append(item.Images, img.String)
+			}
+		}
+
+		items = append(items, item)
+	}
+
+	sendJSON(w, items)
+}
+
+func deleteItemHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, _ := getUserIDFromContext(r.Context())
+	itemID := r.URL.Query().Get("id")
+
+	// Start transaction
+	tx, err := db.Begin()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+
+	// First get the image paths
+	var imagePaths []string
+	rows, err := tx.Query("SELECT image_path FROM item_images WHERE item_id = $1", itemID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		imagePaths = append(imagePaths, path)
+	}
+
+	// Delete item (cascade will handle item_images)
+	result, err := tx.Exec(`
+      DELETE FROM items
+      WHERE id = $1 AND seller_id = $2`,
+		itemID, userID)
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if rowsAffected == 0 {
+		http.Error(w, "Item not found or unauthorized", http.StatusNotFound)
+		return
+	}
+
+	// Delete the physical image files
+	for _, path := range imagePaths {
+		os.Remove(path)
+	}
+
+	if err = tx.Commit(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
 func checkoutHandler(w http.ResponseWriter, r *http.Request) {
 	userID, _ := getUserIDFromContext(r.Context())
 
@@ -686,19 +814,35 @@ func serveImageHandler(w http.ResponseWriter, r *http.Request) {
 
 func enableCors(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Set CORS headers for all responses
 		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:5173")
-		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
+
+		// Handle preflight requests
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
+
 		h(w, r)
 	}
 }
 
 func authMiddleware(h http.HandlerFunc) http.HandlerFunc {
-	return enableCors(func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Set CORS headers
+		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:5173")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
+
+		// Handle preflight requests
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// Check authorization
 		tokenString := r.Header.Get("Authorization")
 		if tokenString == "" {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -733,7 +877,7 @@ func authMiddleware(h http.HandlerFunc) http.HandlerFunc {
 
 		r = r.WithContext(context.WithValue(r.Context(), "userID", userID))
 		h(w, r)
-	})
+	}
 }
 
 func getUserIDFromContext(ctx context.Context) (string, bool) {
@@ -750,7 +894,9 @@ func main() {
 	mux.HandleFunc("/signup", enableCors(signupHandler))
 	mux.HandleFunc("/login", enableCors(loginHandler))
 
-	// Protected routes
+	// Protected routes - note the order of middleware
+	mux.HandleFunc("/user/items", authMiddleware(getUserItemsHandler)) // User dashboard routes
+	mux.HandleFunc("/items/delete", authMiddleware(deleteItemHandler))
 	mux.HandleFunc("/items/create", authMiddleware(createItemWithImagesHandler))
 	mux.HandleFunc("/cart/add", authMiddleware(addToCartHandler))
 	mux.HandleFunc("/cart", authMiddleware(viewCartHandler))
