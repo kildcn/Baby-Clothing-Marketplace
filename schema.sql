@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS items (
     status item_status_enum DEFAULT 'available',
     quantity INTEGER DEFAULT 1,
     seller_id UUID REFERENCES users(id),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT quantity_non_negative CHECK (quantity >= 0)
 );
 
 -- Create item_images table
@@ -90,6 +91,16 @@ CREATE TABLE IF NOT EXISTS order_status_history (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Create messages table
+CREATE TABLE IF NOT EXISTS messages (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    order_id UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    sender_id UUID NOT NULL REFERENCES users(id),
+    message TEXT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT chk_message_not_empty CHECK (message <> '')
+);
+
 -- Create indexes
 CREATE INDEX IF NOT EXISTS idx_items_seller ON items(seller_id);
 CREATE INDEX IF NOT EXISTS idx_items_category ON items(category);
@@ -99,6 +110,8 @@ CREATE INDEX IF NOT EXISTS idx_item_images_item ON item_images(item_id);
 CREATE INDEX IF NOT EXISTS idx_addresses_user ON addresses(user_id);
 CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id);
 CREATE INDEX IF NOT EXISTS idx_order_status_history_order ON order_status_history(order_id);
+CREATE INDEX IF NOT EXISTS idx_messages_order ON messages(order_id);
+CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender_id);
 
 -- Create updated_at trigger function
 CREATE OR REPLACE FUNCTION update_updated_at_column()

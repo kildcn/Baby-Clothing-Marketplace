@@ -184,11 +184,22 @@ export default function Marketplace() {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          address: selectedAddress || checkoutAddress,
-          saveAddress,
-          items: cartItems
+          address_id: selectedAddress?.id,
+          address: !selectedAddress ? {
+            street: checkoutAddress.street,
+            city: checkoutAddress.city,
+            state: checkoutAddress.state,
+            zip_code: checkoutAddress.zipCode,
+            country: checkoutAddress.country
+          } : undefined,
+          save_address: saveAddress
         })
       });
+
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(error);
+      }
 
       const data = await response.json();
       setOrderConfirmation(data);

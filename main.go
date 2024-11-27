@@ -726,13 +726,15 @@ func checkoutHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		sendJSON(w, map[string]string{"error": "Invalid request data"})
+		log.Printf("Error decoding request data: %v", err)
+		http.Error(w, "Invalid request data", http.StatusBadRequest)
 		return
 	}
 
 	tx, err := db.Begin()
 	if err != nil {
-		sendJSON(w, map[string]string{"error": "Internal server error"})
+		log.Printf("Error starting transaction: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer tx.Rollback()
@@ -746,13 +748,15 @@ func checkoutHandler(w http.ResponseWriter, r *http.Request) {
       WHERE c.user_id = $1`,
 		userID).Scan(&total)
 	if err != nil {
-		sendJSON(w, map[string]string{"error": "Failed to calculate total"})
+		log.Printf("Error calculating total: %v", err)
+		http.Error(w, "Failed to calculate total", http.StatusInternalServerError)
 		return
 	}
 
 	// Handle address
 	var addressID string
 	if req.SaveAddress {
+		log.Printf("Saving address for user %s", userID)
 		err = tx.QueryRow(`
           INSERT INTO addresses (user_id, street, city, state, zip_code, country, is_default)
           VALUES ($1, $2, $3, $4, $5, $6, false)
@@ -760,24 +764,28 @@ func checkoutHandler(w http.ResponseWriter, r *http.Request) {
 			userID, req.Address.Street, req.Address.City, req.Address.State,
 			req.Address.ZipCode, req.Address.Country).Scan(&addressID)
 		if err != nil {
-			sendJSON(w, map[string]string{"error": "Failed to save address"})
+			log.Printf("Error saving address: %v", err)
+			http.Error(w, "Failed to save address", http.StatusInternalServerError)
 			return
 		}
 	}
 
 	// Create order
 	var orderID string
+	log.Printf("Creating order for user %s", userID)
 	err = tx.QueryRow(`
       INSERT INTO orders (user_id, address_id, total, status)
       VALUES ($1, $2, $3, 'pending')
       RETURNING id`,
 		userID, addressID, total).Scan(&orderID)
 	if err != nil {
-		sendJSON(w, map[string]string{"error": "Failed to create order"})
+		log.Printf("Error creating order: %v", err)
+		http.Error(w, "Failed to create order", http.StatusInternalServerError)
 		return
 	}
 
 	// Create order items
+	log.Printf("Creating order items for user %s", userID)
 	_, err = tx.Exec(`
       INSERT INTO order_items (order_id, item_id, price_at_time)
       SELECT $1, i.id, i.price
@@ -786,40 +794,51 @@ func checkoutHandler(w http.ResponseWriter, r *http.Request) {
       WHERE c.user_id = $2`,
 		orderID, userID)
 	if err != nil {
-		sendJSON(w, map[string]string{"error": "Failed to create order items"})
+		log.Printf("Error creating order items: %v", err)
+		http.Error(w, "Failed to create order items", http.StatusInternalServerError)
 		return
 	}
 
 	// Update item quantities and status
+	log.Printf("Updating inventory for order %s", orderID)
 	_, err = tx.Exec(`
       UPDATE items i
       SET quantity = quantity - 1,
           status = CASE WHEN quantity - 1 <= 0 THEN 'sold'::item_status_enum
                        ELSE status END
-      FROM cart_items c
-      WHERE c.item_id = i.id AND c.user_id = $1`,
-		userID)
+      FROM order_items oi
+      WHERE oi.item_id = i.id AND oi.order_id = $1`,
+		orderID)
 	if err != nil {
-		sendJSON(w, map[string]string{"error": "Failed to update inventory"})
+		log.Printf("Error updating inventory: %v", err)
+		http.Error(w, "Failed to update inventory", http.StatusInternalServerError)
 		return
 	}
 
 	// Clear cart
+	log.Printf("Clearing cart for user %s", userID)
 	_, err = tx.Exec(`DELETE FROM cart_items WHERE user_id = $1`, userID)
 	if err != nil {
-		sendJSON(w, map[string]string{"error": "Failed to clear cart"})
+		log.Printf("Error clearing cart: %v", err)
+		http.Error(w, "Failed to clear cart", http.StatusInternalServerError)
 		return
 	}
 
 	if err = tx.Commit(); err != nil {
-		sendJSON(w, map[string]string{"error": "Failed to complete checkout"})
+		log.Printf("Error committing transaction: %v", err)
+		http.Error(w, "Failed to complete checkout", http.StatusInternalServerError)
 		return
 	}
 
-	sendJSON(w, map[string]interface{}{
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
 		"order_id": orderID,
 		"status":   "success",
-	})
+	}); err != nil {
+		log.Printf("Error encoding response: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
 }
 
 func getUserOrdersHandler(w http.ResponseWriter, r *http.Request) {
@@ -831,78 +850,108 @@ func getUserOrdersHandler(w http.ResponseWriter, r *http.Request) {
 	userID, _ := getUserIDFromContext(r.Context())
 
 	rows, err := db.Query(`
-		SELECT o.id, o.status, o.created_at, o.updated_at,
-			   a.street, a.city, a.state, a.zip_code, a.country,
-			   array_agg(json_build_object(
-				   'id', i.id,
-				   'title', i.title,
-				   'price', oi.price,
-				   'seller_name', u.name
-			   )) as items
-		FROM orders o
-		JOIN addresses a ON o.address_id = a.id
-		JOIN order_items oi ON o.id = oi.order_id
-		JOIN items i ON oi.item_id = i.id
-		JOIN users u ON i.seller_id = u.id
-		WHERE o.user_id = $1
-		GROUP BY o.id, a.id
-		ORDER BY o.created_at DESC`,
+      SELECT
+          o.id,
+          o.user_id,
+          o.status,
+          o.created_at,
+          o.updated_at,
+          a.street,
+          a.city,
+          a.state,
+          a.zip_code,
+          a.country,
+          COALESCE(
+              json_agg(
+                  json_build_object(
+                      'id', i.id,
+                      'title', i.title,
+                      'price', oi.price_at_time,
+                      'seller_id', i.seller_id,
+                      'seller_name', u.name
+                  )
+              ) FILTER (WHERE i.id IS NOT NULL),
+              '[]'::json
+          ) as items
+      FROM orders o
+      JOIN addresses a ON o.address_id = a.id
+      LEFT JOIN order_items oi ON o.id = oi.order_id
+      LEFT JOIN items i ON oi.item_id = i.id
+      LEFT JOIN users u ON i.seller_id = u.id
+      WHERE o.user_id = $1 OR i.seller_id = $1
+      GROUP BY o.id, o.user_id, a.street, a.city, a.state, a.zip_code, a.country
+      ORDER BY o.created_at DESC`,
 		userID)
+
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
 
-	var orders []map[string]interface{}
-	for rows.Next() {
-		var order struct {
-			ID        string
-			Status    string
-			CreatedAt time.Time
-			UpdatedAt time.Time
-			Street    string
-			City      string
-			State     string
-			ZipCode   string
-			Country   string
-			Items     []byte
-		}
-
-		err := rows.Scan(
-			&order.ID, &order.Status, &order.CreatedAt, &order.UpdatedAt,
-			&order.Street, &order.City, &order.State, &order.ZipCode,
-			&order.Country, &order.Items)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		var items []map[string]interface{}
-		err = json.Unmarshal(order.Items, &items)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		orderMap := map[string]interface{}{
-			"id":         order.ID,
-			"status":     order.Status,
-			"created_at": order.CreatedAt,
-			"updated_at": order.UpdatedAt,
-			"address": map[string]string{
-				"street":   order.Street,
-				"city":     order.City,
-				"state":    order.State,
-				"zip_code": order.ZipCode,
-				"country":  order.Country,
-			},
-			"items": items,
-		}
-		orders = append(orders, orderMap)
+	type OrderItem struct {
+		ID         string  `json:"id"`
+		Title      string  `json:"title"`
+		Price      float64 `json:"price"`
+		SellerID   string  `json:"seller_id"`
+		SellerName string  `json:"seller_name"`
 	}
 
-	sendJSON(w, orders)
+	type Order struct {
+		ID        string    `json:"id"`
+		UserID    string    `json:"user_id"`
+		Status    string    `json:"status"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Address   struct {
+			Street  string `json:"street"`
+			City    string `json:"city"`
+			State   string `json:"state"`
+			ZipCode string `json:"zip_code"`
+			Country string `json:"country"`
+		} `json:"address"`
+		Items []OrderItem `json:"items"`
+	}
+
+	var orders []Order
+	for rows.Next() {
+		var o Order
+		var itemsJSON []byte
+
+		err := rows.Scan(
+			&o.ID,
+			&o.UserID,
+			&o.Status,
+			&o.CreatedAt,
+			&o.UpdatedAt,
+			&o.Address.Street,
+			&o.Address.City,
+			&o.Address.State,
+			&o.Address.ZipCode,
+			&o.Address.Country,
+			&itemsJSON,
+		)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		err = json.Unmarshal(itemsJSON, &o.Items)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		orders = append(orders, o)
+	}
+
+	if err = rows.Err(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(orders)
 }
 
 func updateOrderStatusHandler(w http.ResponseWriter, r *http.Request) {
@@ -933,12 +982,12 @@ func updateOrderStatusHandler(w http.ResponseWriter, r *http.Request) {
 	// Verify user is either the buyer or seller
 	var isAuthorized bool
 	err = tx.QueryRow(`
-		SELECT EXISTS (
-			SELECT 1 FROM orders o
-			JOIN order_items oi ON o.id = oi.order_id
-			JOIN items i ON oi.item_id = i.id
-			WHERE o.id = $1 AND (o.user_id = $2 OR i.seller_id = $2)
-		)`,
+      SELECT EXISTS (
+          SELECT 1 FROM orders o
+          JOIN order_items oi ON o.id = oi.order_id
+          JOIN items i ON oi.item_id = i.id
+          WHERE o.id = $1 AND (o.user_id = $2 OR i.seller_id = $2)
+      )`,
 		orderID, userID).Scan(&isAuthorized)
 
 	if err != nil {
@@ -953,9 +1002,9 @@ func updateOrderStatusHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Update order status
 	_, err = tx.Exec(`
-		UPDATE orders
-		SET status = $1, updated_at = CURRENT_TIMESTAMP
-		WHERE id = $2`,
+      UPDATE orders
+      SET status = $1, updated_at = CURRENT_TIMESTAMP
+      WHERE id = $2`,
 		req.Status, orderID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -964,8 +1013,8 @@ func updateOrderStatusHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Add status update to history
 	_, err = tx.Exec(`
-		INSERT INTO order_status_history (order_id, status, message, created_by)
-		VALUES ($1, $2, $3, $4)`,
+      INSERT INTO order_status_history (order_id, status, message, created_by)
+      VALUES ($1, $2, $3, $4)`,
 		orderID, req.Status, req.Message, userID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -980,6 +1029,71 @@ func updateOrderStatusHandler(w http.ResponseWriter, r *http.Request) {
 	sendJSON(w, map[string]string{
 		"status": "success",
 	})
+}
+
+func getMessageHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	orderID := strings.TrimPrefix(r.URL.Path, "/orders/")
+	orderID = strings.TrimSuffix(orderID, "/messages")
+
+	rows, err := db.Query(`
+      SELECT id, sender_id, message, created_at
+      FROM messages
+      WHERE order_id = $1
+      ORDER BY created_at ASC`,
+		orderID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var messages []Message
+	for rows.Next() {
+		var msg Message
+		err := rows.Scan(&msg.ID, &msg.SenderID, &msg.Message, &msg.CreatedAt)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		messages = append(messages, msg)
+	}
+
+	sendJSON(w, messages)
+}
+
+func sendMessageHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, _ := getUserIDFromContext(r.Context())
+	orderID := strings.TrimPrefix(r.URL.Path, "/orders/")
+	orderID = strings.TrimSuffix(orderID, "/messages")
+
+	var msg struct {
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	_, err := db.Exec(`
+      INSERT INTO messages (order_id, sender_id, message)
+      VALUES ($1, $2, $3)`,
+		orderID, userID, msg.Message)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
 }
 
 func enableCors(h http.HandlerFunc) http.HandlerFunc {
@@ -1052,6 +1166,7 @@ func getUserIDFromContext(ctx context.Context) (string, bool) {
 
 // Add these just before the main() function
 
+// getUserItemsHandler()
 func getUserItemsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1061,15 +1176,15 @@ func getUserItemsHandler(w http.ResponseWriter, r *http.Request) {
 	userID, _ := getUserIDFromContext(r.Context())
 
 	rows, err := db.Query(`
-      SELECT i.id, i.title, i.description, i.price, i.size, i.category,
-             i.status, i.quantity, i.seller_id, u.name as seller_name,
-             i.created_at, array_agg(im.image_path) as images
-      FROM items i
-      LEFT JOIN item_images im ON i.id = im.item_id
-      JOIN users u ON i.seller_id = u.id
-      WHERE i.seller_id = $1
-      GROUP BY i.id, u.name
-      ORDER BY i.created_at DESC`,
+		SELECT i.id, i.title, i.description, i.price, i.size, i.category,
+			   i.status, i.quantity, i.seller_id, u.name as seller_name,
+			   i.created_at, array_agg(im.image_path) as images
+		FROM items i
+		LEFT JOIN item_images im ON i.id = im.item_id
+		JOIN users u ON i.seller_id = u.id
+		WHERE i.seller_id = $1
+		GROUP BY i.id, u.name
+		ORDER BY i.created_at DESC`,
 		userID)
 
 	if err != nil {
@@ -1225,6 +1340,20 @@ func main() {
 	mux.HandleFunc("/cart", authMiddleware(viewCartHandler))
 	mux.HandleFunc("/cart/remove", authMiddleware(removeFromCartHandler))
 	mux.HandleFunc("/checkout", authMiddleware(checkoutHandler))
+	mux.HandleFunc("/orders/", enableCors(authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/messages") {
+			switch r.Method {
+			case http.MethodGet:
+				getMessageHandler(w, r)
+			case http.MethodPost:
+				sendMessageHandler(w, r)
+			case http.MethodOptions:
+				w.WriteHeader(http.StatusOK)
+			default:
+				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			}
+		}
+	})))
 
 	// Public routes
 	mux.HandleFunc("/items/search", enableCors(searchItemsHandler))
