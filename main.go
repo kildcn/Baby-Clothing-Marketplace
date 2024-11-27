@@ -31,7 +31,7 @@ type User struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
 	Email    string `json:"email"`
-	Password string `json:"-"` // "-" means this won't be sent in JSON responses
+	Password string `json:"-"`
 }
 
 type Item struct {
@@ -49,6 +49,44 @@ type Item struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+type Order struct {
+	ID          string    `json:"id"`
+	UserID      string    `json:"user_id"`
+	AddressID   string    `json:"address_id"`
+	TotalAmount float64   `json:"total_amount"`
+	Status      string    `json:"status"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+type OrderStatus struct {
+	ID        string    `json:"id"`
+	OrderID   string    `json:"order_id"`
+	Status    string    `json:"status"`
+	Message   string    `json:"message"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type Address struct {
+	ID        string    `json:"id"`
+	UserID    string    `json:"user_id"`
+	Street    string    `json:"street"`
+	City      string    `json:"city"`
+	State     string    `json:"state"`
+	ZipCode   string    `json:"zip_code"`
+	Country   string    `json:"country"`
+	IsDefault bool      `json:"is_default"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type Message struct {
+	ID        string    `json:"id"`
+	OrderID   string    `json:"order_id"`
+	SenderID  string    `json:"sender_id"`
+	Message   string    `json:"message"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // Constants
 const (
 	maxFileSize = 10 << 20 // 10MB
@@ -59,7 +97,6 @@ const (
 var db *sql.DB
 
 func initDB() {
-	// Update with your username from whoami command
 	connStr := "postgres://killian@localhost/marketplace?sslmode=disable"
 	var err error
 	db, err = sql.Open("postgres", connStr)
@@ -110,10 +147,12 @@ func saveImage(fileHeader *multipart.FileHeader) (string, error) {
 		return "", err
 	}
 
-	filename := filepath.Join(uploadDir, fmt.Sprintf("%s%s",
-		uuid.New().String(), filepath.Ext(fileHeader.Filename)))
+	filename := fmt.Sprintf("%s%s",
+		uuid.New().String(), filepath.Ext(fileHeader.Filename))
 
-	dst, err := os.Create(filename)
+	// Save to full path
+	fullPath := filepath.Join(uploadDir, filename)
+	dst, err := os.Create(fullPath)
 	if err != nil {
 		return "", err
 	}
@@ -123,10 +162,11 @@ func saveImage(fileHeader *multipart.FileHeader) (string, error) {
 		return "", err
 	}
 
-	return filename, nil
+	// Return relative path for database storage
+	return filepath.Join("uploads", filename), nil
 }
 
-// Handlers
+// Auth Handlers
 func signupHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -222,6 +262,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// Item Handlers
 func searchItemsHandler(w http.ResponseWriter, r *http.Request) {
 	query := strings.ToLower(r.URL.Query().Get("q"))
 	category := r.URL.Query().Get("category")
@@ -330,7 +371,6 @@ func createItemWithImagesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set default quantity to 1
 	item.Quantity = 1
 	log.Printf("Setting initial quantity to: %d", item.Quantity)
 
@@ -344,7 +384,6 @@ func createItemWithImagesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Start transaction
 	tx, err := db.Begin()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -352,15 +391,12 @@ func createItemWithImagesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	// Insert item with explicit quantity = 1
 	var itemID string
 	err = tx.QueryRow(`
         INSERT INTO items (title, description, price, size, category, seller_id, quantity, status)
         VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, 1), 'available'::item_status_enum)
-        RETURNING id, quantity`, // Also return quantity to verify
+        RETURNING id, quantity`,
 		item.Title, item.Description, item.Price, item.Size, item.Category, userID, item.Quantity).Scan(&itemID, &item.Quantity)
-
-	log.Printf("After insert, quantity is: %d", item.Quantity)
 
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Error inserting item: %v", err), http.StatusInternalServerError)
@@ -373,10 +409,8 @@ func createItemWithImagesHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Error checking quantity: %v", err), http.StatusInternalServerError)
 		return
 	}
-	log.Printf("Verification query shows quantity: %d", checkQuantity)
 
 	if checkQuantity != 1 {
-		// Update it if somehow it's not 1
 		_, err = tx.Exec(`UPDATE items SET quantity = 1 WHERE id = $1`, itemID)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Error fixing quantity: %v", err), http.StatusInternalServerError)
@@ -384,7 +418,6 @@ func createItemWithImagesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Save images and create records
 	var imagePaths []string
 	for _, fileHeader := range files {
 		imagePath, err := saveImage(fileHeader)
@@ -405,19 +438,16 @@ func createItemWithImagesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Commit transaction
 	if err = tx.Commit(); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Fetch complete item data
 	var createdItem Item
 	var images []sql.NullString
 	err = db.QueryRow(`
 		SELECT i.id, i.title, i.description, i.price, i.size,
-			   i.category, i.status, i.quantity, i.seller_id,
-			   u.name as seller_name, i.created_at,
+			   i.category, i.status, i.quantity, i.seller_id, u.name as seller_name, i.created_at,
 			   array_agg(im.image_path) as images
 		FROM items i
 		LEFT JOIN item_images im ON i.id = im.item_id
@@ -445,6 +475,7 @@ func createItemWithImagesHandler(w http.ResponseWriter, r *http.Request) {
 	sendJSON(w, createdItem)
 }
 
+// Cart Handlers
 func addToCartHandler(w http.ResponseWriter, r *http.Request) {
 	userID, _ := getUserIDFromContext(r.Context())
 
@@ -463,7 +494,6 @@ func addToCartHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	// Check item availability
 	var quantity int
 	err = tx.QueryRow(`
       SELECT quantity FROM items
@@ -479,13 +509,11 @@ func addToCartHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Allow items to be added only if quantity > 0
 	if quantity <= 0 {
 		http.Error(w, "Item out of stock", http.StatusBadRequest)
 		return
 	}
 
-	// Check how many of this item are in the user's cart
 	var cartCount int
 	err = tx.QueryRow(`
       SELECT COUNT(*) FROM cart_items
@@ -497,13 +525,11 @@ func addToCartHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Make sure we don't exceed available quantity
 	if cartCount >= quantity {
 		http.Error(w, "Cannot add more of this item - quantity limit reached", http.StatusBadRequest)
 		return
 	}
 
-	// Add to cart
 	_, err = tx.Exec(`
       INSERT INTO cart_items (user_id, item_id)
       VALUES ($1, $2)`,
@@ -519,7 +545,6 @@ func addToCartHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return updated cart
 	viewCartHandler(w, r)
 }
 
@@ -596,7 +621,436 @@ func removeFromCartHandler(w http.ResponseWriter, r *http.Request) {
 	viewCartHandler(w, r)
 }
 
-// User dashboard handlers
+// Address Handlers
+func saveAddressHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, _ := getUserIDFromContext(r.Context())
+
+	var address Address
+	if err := json.NewDecoder(r.Body).Decode(&address); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+
+	if address.IsDefault {
+		_, err = tx.Exec(`
+			UPDATE addresses
+			SET is_default = false
+			WHERE user_id = $1`,
+			userID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	err = tx.QueryRow(`
+		INSERT INTO addresses (user_id, street, city, state, zip_code, country, is_default)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id`,
+		userID, address.Street, address.City, address.State,
+		address.ZipCode, address.Country, address.IsDefault).Scan(&address.ID)
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if err = tx.Commit(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	sendJSON(w, address)
+}
+
+func getUserAddressesHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, _ := getUserIDFromContext(r.Context())
+
+	rows, err := db.Query(`
+		SELECT id, street, city, state, zip_code, country, is_default, created_at
+		FROM addresses
+		WHERE user_id = $1
+		ORDER BY is_default DESC, created_at DESC`,
+		userID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var addresses []Address
+	for rows.Next() {
+		var addr Address
+		err := rows.Scan(
+			&addr.ID, &addr.Street, &addr.City, &addr.State,
+			&addr.ZipCode, &addr.Country, &addr.IsDefault, &addr.CreatedAt)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		addresses = append(addresses, addr)
+	}
+
+	sendJSON(w, addresses)
+}
+
+// Order Handlers
+func checkoutHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, _ := getUserIDFromContext(r.Context())
+
+	var req struct {
+		Address     Address `json:"address"`
+		SaveAddress bool    `json:"save_address"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendJSON(w, map[string]string{"error": "Invalid request data"})
+		return
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		sendJSON(w, map[string]string{"error": "Internal server error"})
+		return
+	}
+	defer tx.Rollback()
+
+	// Calculate total from cart items
+	var total float64
+	err = tx.QueryRow(`
+      SELECT COALESCE(SUM(i.price), 0)
+      FROM cart_items c
+      JOIN items i ON c.item_id = i.id
+      WHERE c.user_id = $1`,
+		userID).Scan(&total)
+	if err != nil {
+		sendJSON(w, map[string]string{"error": "Failed to calculate total"})
+		return
+	}
+
+	// Handle address
+	var addressID string
+	if req.SaveAddress {
+		err = tx.QueryRow(`
+          INSERT INTO addresses (user_id, street, city, state, zip_code, country, is_default)
+          VALUES ($1, $2, $3, $4, $5, $6, false)
+          RETURNING id`,
+			userID, req.Address.Street, req.Address.City, req.Address.State,
+			req.Address.ZipCode, req.Address.Country).Scan(&addressID)
+		if err != nil {
+			sendJSON(w, map[string]string{"error": "Failed to save address"})
+			return
+		}
+	}
+
+	// Create order
+	var orderID string
+	err = tx.QueryRow(`
+      INSERT INTO orders (user_id, address_id, total, status)
+      VALUES ($1, $2, $3, 'pending')
+      RETURNING id`,
+		userID, addressID, total).Scan(&orderID)
+	if err != nil {
+		sendJSON(w, map[string]string{"error": "Failed to create order"})
+		return
+	}
+
+	// Create order items
+	_, err = tx.Exec(`
+      INSERT INTO order_items (order_id, item_id, price_at_time)
+      SELECT $1, i.id, i.price
+      FROM cart_items c
+      JOIN items i ON c.item_id = i.id
+      WHERE c.user_id = $2`,
+		orderID, userID)
+	if err != nil {
+		sendJSON(w, map[string]string{"error": "Failed to create order items"})
+		return
+	}
+
+	// Update item quantities and status
+	_, err = tx.Exec(`
+      UPDATE items i
+      SET quantity = quantity - 1,
+          status = CASE WHEN quantity - 1 <= 0 THEN 'sold'::item_status_enum
+                       ELSE status END
+      FROM cart_items c
+      WHERE c.item_id = i.id AND c.user_id = $1`,
+		userID)
+	if err != nil {
+		sendJSON(w, map[string]string{"error": "Failed to update inventory"})
+		return
+	}
+
+	// Clear cart
+	_, err = tx.Exec(`DELETE FROM cart_items WHERE user_id = $1`, userID)
+	if err != nil {
+		sendJSON(w, map[string]string{"error": "Failed to clear cart"})
+		return
+	}
+
+	if err = tx.Commit(); err != nil {
+		sendJSON(w, map[string]string{"error": "Failed to complete checkout"})
+		return
+	}
+
+	sendJSON(w, map[string]interface{}{
+		"order_id": orderID,
+		"status":   "success",
+	})
+}
+
+func getUserOrdersHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, _ := getUserIDFromContext(r.Context())
+
+	rows, err := db.Query(`
+		SELECT o.id, o.status, o.created_at, o.updated_at,
+			   a.street, a.city, a.state, a.zip_code, a.country,
+			   array_agg(json_build_object(
+				   'id', i.id,
+				   'title', i.title,
+				   'price', oi.price,
+				   'seller_name', u.name
+			   )) as items
+		FROM orders o
+		JOIN addresses a ON o.address_id = a.id
+		JOIN order_items oi ON o.id = oi.order_id
+		JOIN items i ON oi.item_id = i.id
+		JOIN users u ON i.seller_id = u.id
+		WHERE o.user_id = $1
+		GROUP BY o.id, a.id
+		ORDER BY o.created_at DESC`,
+		userID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var orders []map[string]interface{}
+	for rows.Next() {
+		var order struct {
+			ID        string
+			Status    string
+			CreatedAt time.Time
+			UpdatedAt time.Time
+			Street    string
+			City      string
+			State     string
+			ZipCode   string
+			Country   string
+			Items     []byte
+		}
+
+		err := rows.Scan(
+			&order.ID, &order.Status, &order.CreatedAt, &order.UpdatedAt,
+			&order.Street, &order.City, &order.State, &order.ZipCode,
+			&order.Country, &order.Items)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		var items []map[string]interface{}
+		err = json.Unmarshal(order.Items, &items)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		orderMap := map[string]interface{}{
+			"id":         order.ID,
+			"status":     order.Status,
+			"created_at": order.CreatedAt,
+			"updated_at": order.UpdatedAt,
+			"address": map[string]string{
+				"street":   order.Street,
+				"city":     order.City,
+				"state":    order.State,
+				"zip_code": order.ZipCode,
+				"country":  order.Country,
+			},
+			"items": items,
+		}
+		orders = append(orders, orderMap)
+	}
+
+	sendJSON(w, orders)
+}
+
+func updateOrderStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, _ := getUserIDFromContext(r.Context())
+	orderID := r.URL.Query().Get("order_id")
+
+	var req struct {
+		Status  string `json:"status"`
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+
+	// Verify user is either the buyer or seller
+	var isAuthorized bool
+	err = tx.QueryRow(`
+		SELECT EXISTS (
+			SELECT 1 FROM orders o
+			JOIN order_items oi ON o.id = oi.order_id
+			JOIN items i ON oi.item_id = i.id
+			WHERE o.id = $1 AND (o.user_id = $2 OR i.seller_id = $2)
+		)`,
+		orderID, userID).Scan(&isAuthorized)
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if !isAuthorized {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Update order status
+	_, err = tx.Exec(`
+		UPDATE orders
+		SET status = $1, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $2`,
+		req.Status, orderID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Add status update to history
+	_, err = tx.Exec(`
+		INSERT INTO order_status_history (order_id, status, message, created_by)
+		VALUES ($1, $2, $3, $4)`,
+		orderID, req.Status, req.Message, userID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if err = tx.Commit(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	sendJSON(w, map[string]string{
+		"status": "success",
+	})
+}
+
+func enableCors(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:5173")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		h(w, r)
+	}
+}
+
+func authMiddleware(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:5173")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		tokenString := r.Header.Get("Authorization")
+		if tokenString == "" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		tokenString = strings.Replace(tokenString, "Bearer ", "", 1)
+
+		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method")
+			}
+			return []byte("your-secret-key"), nil
+		})
+
+		if err != nil || !token.Valid {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		claims, ok := token.Claims.(jwt.MapClaims)
+		if !ok {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		userID, ok := claims["user_id"].(string)
+		if !ok {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		r = r.WithContext(context.WithValue(r.Context(), "userID", userID))
+		h(w, r)
+	}
+}
+
+func getUserIDFromContext(ctx context.Context) (string, bool) {
+	userID, ok := ctx.Value("userID").(string)
+	return userID, ok
+}
+
+// Add these just before the main() function
 
 func getUserItemsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -660,7 +1114,6 @@ func deleteItemHandler(w http.ResponseWriter, r *http.Request) {
 	userID, _ := getUserIDFromContext(r.Context())
 	itemID := r.URL.Query().Get("id")
 
-	// Start transaction
 	tx, err := db.Begin()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -668,7 +1121,6 @@ func deleteItemHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	// First get the image paths
 	var imagePaths []string
 	rows, err := tx.Query("SELECT image_path FROM item_images WHERE item_id = $1", itemID)
 	if err != nil {
@@ -686,7 +1138,6 @@ func deleteItemHandler(w http.ResponseWriter, r *http.Request) {
 		imagePaths = append(imagePaths, path)
 	}
 
-	// Delete item (cascade will handle item_images)
 	result, err := tx.Exec(`
       DELETE FROM items
       WHERE id = $1 AND seller_id = $2`,
@@ -708,7 +1159,6 @@ func deleteItemHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delete the physical image files
 	for _, path := range imagePaths {
 		os.Remove(path)
 	}
@@ -721,87 +1171,6 @@ func deleteItemHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func checkoutHandler(w http.ResponseWriter, r *http.Request) {
-	userID, _ := getUserIDFromContext(r.Context())
-
-	tx, err := db.Begin()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer tx.Rollback()
-
-	// Get items in cart with their quantities
-	rows, err := tx.Query(`
-      SELECT item_id, COUNT(*) as count_in_cart
-      FROM cart_items
-      WHERE user_id = $1
-      GROUP BY item_id`,
-		userID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
-
-	// For each item, decrease quantity
-	for rows.Next() {
-		var itemID string
-		var countInCart int
-		if err := rows.Scan(&itemID, &countInCart); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// Update item quantity
-		result, err := tx.Exec(`
-          UPDATE items
-          SET quantity = quantity - $1
-          WHERE id = $2 AND quantity >= $1`,
-			countInCart, itemID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// Check if update was successful
-		rowsAffected, err := result.RowsAffected()
-		if err != nil || rowsAffected == 0 {
-			http.Error(w, "Some items are no longer available in requested quantity", http.StatusBadRequest)
-			return
-		}
-
-		// Update status to 'sold' if quantity reaches 0
-		_, err = tx.Exec(`
-          UPDATE items
-          SET status = CASE
-              WHEN quantity = 0 THEN 'sold'::item_status_enum
-              ELSE status
-              END
-          WHERE id = $1`,
-			itemID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
-
-	// Clear user's cart
-	_, err = tx.Exec(`DELETE FROM cart_items WHERE user_id = $1`, userID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Commit transaction
-	if err = tx.Commit(); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	sendJSON(w, map[string]string{"message": "Checkout successful"})
-}
-
 func serveImageHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -809,80 +1178,31 @@ func serveImageHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	imagePath := r.URL.Query().Get("path")
-	http.ServeFile(w, r, imagePath)
-}
-
-func enableCors(h http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Set CORS headers for all responses
-		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:5173")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
-
-		// Handle preflight requests
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		h(w, r)
+	if imagePath == "" {
+		http.Error(w, "Image path is required", http.StatusBadRequest)
+		return
 	}
-}
 
-func authMiddleware(h http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Set CORS headers
-		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:5173")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
+	// Convert relative path to absolute path
+	fullPath := filepath.Join(".", imagePath)
 
-		// Handle preflight requests
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		// Check authorization
-		tokenString := r.Header.Get("Authorization")
-		if tokenString == "" {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-
-		tokenString = strings.Replace(tokenString, "Bearer ", "", 1)
-
-		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("unexpected signing method")
-			}
-			return []byte("your-secret-key"), nil
-		})
-
-		if err != nil || !token.Valid {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-
-		claims, ok := token.Claims.(jwt.MapClaims)
-		if !ok {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-
-		userID, ok := claims["user_id"].(string)
-		if !ok {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-
-		r = r.WithContext(context.WithValue(r.Context(), "userID", userID))
-		h(w, r)
+	// Basic security check to prevent directory traversal
+	if !strings.Contains(fullPath, uploadDir) && !strings.Contains(fullPath, "uploads") {
+		http.Error(w, "Invalid image path", http.StatusBadRequest)
+		return
 	}
-}
 
-func getUserIDFromContext(ctx context.Context) (string, bool) {
-	userID, ok := ctx.Value("userID").(string)
-	return userID, ok
+	// Check if file exists
+	if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+		http.Error(w, "Image not found", http.StatusNotFound)
+		return
+	}
+
+	// Set appropriate headers
+	w.Header().Set("Content-Type", "image/jpeg") // You might want to detect the actual content type
+	w.Header().Set("Cache-Control", "public, max-age=31536000")
+
+	http.ServeFile(w, r, fullPath)
 }
 
 func main() {
@@ -894,10 +1214,13 @@ func main() {
 	mux.HandleFunc("/signup", enableCors(signupHandler))
 	mux.HandleFunc("/login", enableCors(loginHandler))
 
-	// Protected routes - note the order of middleware
-	mux.HandleFunc("/user/items", authMiddleware(getUserItemsHandler)) // User dashboard routes
-	mux.HandleFunc("/items/delete", authMiddleware(deleteItemHandler))
+	// Protected routes
+	mux.HandleFunc("/user/items", authMiddleware(getUserItemsHandler))
+	mux.HandleFunc("/user/addresses", authMiddleware(getUserAddressesHandler))
+	mux.HandleFunc("/user/orders", authMiddleware(getUserOrdersHandler))
 	mux.HandleFunc("/items/create", authMiddleware(createItemWithImagesHandler))
+	mux.HandleFunc("/items/delete", authMiddleware(deleteItemHandler))
+	mux.HandleFunc("/orders/update", authMiddleware(updateOrderStatusHandler))
 	mux.HandleFunc("/cart/add", authMiddleware(addToCartHandler))
 	mux.HandleFunc("/cart", authMiddleware(viewCartHandler))
 	mux.HandleFunc("/cart/remove", authMiddleware(removeFromCartHandler))
@@ -907,7 +1230,6 @@ func main() {
 	mux.HandleFunc("/items/search", enableCors(searchItemsHandler))
 	mux.HandleFunc("/images", enableCors(serveImageHandler))
 
-	// Create uploads directory if it doesn't exist
 	if err := os.MkdirAll(uploadDir, 0755); err != nil {
 		log.Fatal("Error creating uploads directory:", err)
 	}
