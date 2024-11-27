@@ -1,5 +1,7 @@
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useState, useEffect } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import NotificationSystem from '../components/NotificationSystem';
+import { MessageCircle, Package, ShoppingBag, Tag } from 'lucide-react';
 
 const getUserIdFromToken = (token) => {
   try {
@@ -20,11 +22,27 @@ export default function UserDashboard() {
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [message, setMessage] = useState('');
   const [messages, setMessages] = useState([]);
+  const [userNames, setUserNames] = useState({});
   const [trackingNumber, setTrackingNumber] = useState('');
   const [userId, setUserId] = useState(null);
+  const [userName, setUserName] = useState('');
+
   const token = localStorage.getItem('token');
   const navigate = useNavigate();
+  const location = useLocation();
 
+  // Handle opening orders from notifications
+  useEffect(() => {
+    if (location.state?.openOrder) {
+      const order = orders.find(o => o.id === location.state.openOrder);
+      if (order) {
+        setSelectedOrder(order);
+        fetchMessages(order.id);
+      }
+    }
+  }, [orders, location.state]);
+
+  // Initialize dashboard data
   useEffect(() => {
     if (!token) {
       navigate('/');
@@ -32,9 +50,40 @@ export default function UserDashboard() {
     }
     const id = getUserIdFromToken(token);
     setUserId(id);
+
+    // Fetch current user's name
+    const fetchCurrentUserName = async () => {
+      try {
+        const response = await fetch(`http://localhost:8080/users/${id}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await response.json();
+        setUserName(data.name);
+      } catch (error) {
+        console.error('Error fetching user name:', error);
+      }
+    };
+
+    fetchCurrentUserName();
     fetchUserItems();
     fetchOrders();
   }, [token]);
+
+  const fetchUserName = async (userId) => {
+    if (userNames[userId]) return;
+    try {
+      const response = await fetch(`http://localhost:8080/users/${userId}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await response.json();
+      setUserNames(prev => ({
+        ...prev,
+        [userId]: data.name
+      }));
+    } catch (error) {
+      console.error('Error fetching user name:', error);
+    }
+  };
 
   const fetchUserItems = async () => {
     try {
@@ -54,8 +103,6 @@ export default function UserDashboard() {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       const data = await response.json();
-      console.log('Orders fetched:', data);
-      console.log('Current userId:', userId);
       setOrders(data || []);
     } catch (error) {
       console.error('Error fetching orders:', error);
@@ -69,6 +116,10 @@ export default function UserDashboard() {
       });
       const data = await response.json();
       setMessages(data || []);
+
+      // Fetch names for all users in messages
+      const uniqueUserIds = [...new Set(data.map(msg => msg.sender_id))];
+      uniqueUserIds.forEach(fetchUserName);
     } catch (error) {
       console.error('Error fetching messages:', error);
     }
@@ -131,52 +182,55 @@ export default function UserDashboard() {
     }
   };
 
-  const filterPurchasedOrders = (order) => {
-    console.log("Checking purchase order:", order, "userId:", userId);
-    return String(order.user_id) === String(userId);
-  };
-
-  const filterSoldOrders = (order) => {
-    console.log("Checking sold order:", order, "userId:", userId);
-    return order.items.some(item => String(item.seller_id) === String(userId));
-  };
+  const filterPurchasedOrders = (order) => String(order.user_id) === String(userId);
+  const filterSoldOrders = (order) => order.items.some(item => String(item.seller_id) === String(userId));
 
   return (
     <div className="container mx-auto p-4">
       <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold">Dashboard</h1>
-        <Link to="/" className="bg-blue-500 text-white px-4 py-2 rounded">
-          Back to Marketplace
-        </Link>
+        <div className="flex items-center gap-4">
+          <h1 className="text-2xl font-bold">Dashboard</h1>
+          {userName && <p className="text-gray-600">Welcome back, {userName}!</p>}
+        </div>
+        <div className="flex items-center gap-4">
+          <NotificationSystem />
+          <Link to="/" className="bg-blue-500 text-white px-4 py-2 rounded">
+            Back to Marketplace
+          </Link>
+        </div>
       </div>
 
       <div className="flex space-x-2 mb-6">
         <button
           onClick={() => setActiveTab('purchased')}
-          className={`px-4 py-2 rounded ${
+          className={`px-4 py-2 rounded flex items-center gap-2 ${
             activeTab === 'purchased' ? 'bg-blue-500 text-white' : 'bg-gray-200'
           }`}
         >
+          <ShoppingBag size={20} />
           Purchases
         </button>
         <button
           onClick={() => setActiveTab('sold')}
-          className={`px-4 py-2 rounded ${
+          className={`px-4 py-2 rounded flex items-center gap-2 ${
             activeTab === 'sold' ? 'bg-blue-500 text-white' : 'bg-gray-200'
           }`}
         >
+          <Package size={20} />
           Sales
         </button>
         <button
           onClick={() => setActiveTab('listings')}
-          className={`px-4 py-2 rounded ${
+          className={`px-4 py-2 rounded flex items-center gap-2 ${
             activeTab === 'listings' ? 'bg-blue-500 text-white' : 'bg-gray-200'
           }`}
         >
+          <Tag size={20} />
           My Listings
         </button>
       </div>
 
+      {/* Purchased Orders Tab */}
       {activeTab === 'purchased' && (
         <div className="bg-white rounded-lg shadow p-6">
           <h2 className="text-xl font-semibold mb-4">My Purchases</h2>
@@ -206,8 +260,9 @@ export default function UserDashboard() {
                     setSelectedOrder(order);
                     fetchMessages(order.id);
                   }}
-                  className="mt-2 text-blue-500"
+                  className="mt-2 text-blue-500 flex items-center gap-2"
                 >
+                  <MessageCircle size={16} />
                   View Details & Messages
                 </button>
               </div>
@@ -216,6 +271,7 @@ export default function UserDashboard() {
         </div>
       )}
 
+      {/* Sales Tab */}
       {activeTab === 'sold' && (
         <div className="bg-white rounded-lg shadow p-6">
           <h2 className="text-xl font-semibold mb-4">My Sales</h2>
@@ -241,17 +297,17 @@ export default function UserDashboard() {
                   ))}
                 </div>
                 {order.status === 'pending' && (
-                  <div className="mt-2">
+                  <div className="mt-2 flex gap-2">
                     <input
                       type="text"
                       placeholder="Enter tracking number"
-                      className="border rounded p-2 mr-2"
+                      className="flex-1 border rounded p-2"
                       value={trackingNumber}
                       onChange={(e) => setTrackingNumber(e.target.value)}
                     />
                     <button
                       onClick={() => updateOrderStatus(order.id, 'shipped')}
-                      className="bg-blue-500 text-white px-4 py-2 rounded"
+                      className="bg-blue-500 text-white px-4 py-2 rounded whitespace-nowrap"
                     >
                       Mark as Shipped
                     </button>
@@ -262,8 +318,9 @@ export default function UserDashboard() {
                     setSelectedOrder(order);
                     fetchMessages(order.id);
                   }}
-                  className="mt-2 text-blue-500"
+                  className="mt-2 text-blue-500 flex items-center gap-2"
                 >
+                  <MessageCircle size={16} />
                   View Details & Messages
                 </button>
               </div>
@@ -272,6 +329,7 @@ export default function UserDashboard() {
         </div>
       )}
 
+      {/* Listings Tab */}
       {activeTab === 'listings' && (
         <div className="bg-white rounded-lg shadow p-6">
           <div className="flex justify-between items-center mb-4">
@@ -315,35 +373,44 @@ export default function UserDashboard() {
         </div>
       )}
 
+      {/* Order Details Modal */}
       {selectedOrder && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-xl font-semibold">Order Details & Messages</h2>
-              <button onClick={() => setSelectedOrder(null)} className="text-gray-500">
+              <button onClick={() => setSelectedOrder(null)} className="text-gray-500 hover:text-gray-700">
                 ×
               </button>
             </div>
             <div className="mb-4">
               <h3 className="font-semibold">Order Status: {selectedOrder.status}</h3>
-              <p>Shipping Address:</p>
+              <p className="text-gray-600 mt-2">Shipping Address:</p>
               <p>{selectedOrder.address.street}</p>
               <p>{selectedOrder.address.city}, {selectedOrder.address.state} {selectedOrder.address.zip_code}</p>
               <p>{selectedOrder.address.country}</p>
             </div>
             <div className="border-t pt-4">
-              <h3 className="font-semibold mb-2">Messages</h3>
-              <div className="space-y-2 mb-4">
+            <h3 className="font-semibold mb-2">Messages</h3>
+              <div className="space-y-2 mb-4 max-h-96 overflow-y-auto">
                 {messages.map(msg => (
-                  <div key={msg.id} className={`p-2 rounded ${
-                    msg.sender_id === userId
-                      ? 'bg-blue-100 ml-8'
-                      : 'bg-gray-100 mr-8'
-                  }`}>
+                  <div
+                    key={msg.id}
+                    className={`p-2 rounded ${
+                      msg.sender_id === userId
+                        ? 'bg-blue-100 ml-8'
+                        : 'bg-gray-100 mr-8'
+                    }`}
+                  >
+                    <div className="flex justify-between items-center mb-1">
+                      <span className="font-semibold text-sm">
+                        {msg.sender_id === userId ? 'You' : userNames[msg.sender_id] || 'User'}
+                      </span>
+                      <small className="text-gray-500">
+                        {new Date(msg.created_at).toLocaleString()}
+                      </small>
+                    </div>
                     <p>{msg.message}</p>
-                    <small className="text-gray-500">
-                      {new Date(msg.created_at).toLocaleString()}
-                    </small>
                   </div>
                 ))}
               </div>
@@ -352,12 +419,18 @@ export default function UserDashboard() {
                   type="text"
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
+                  onKeyPress={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      sendMessage(selectedOrder.id);
+                    }
+                  }}
                   placeholder="Type a message..."
                   className="flex-1 border rounded p-2"
                 />
                 <button
                   onClick={() => sendMessage(selectedOrder.id)}
-                  className="bg-blue-500 text-white px-4 py-2 rounded"
+                  className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
                 >
                   Send
                 </button>

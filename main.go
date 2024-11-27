@@ -262,6 +262,24 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func getUserNameHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID := strings.TrimPrefix(r.URL.Path, "/users/")
+
+	var name string
+	err := db.QueryRow("SELECT name FROM users WHERE id = $1", userID).Scan(&name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	sendJSON(w, map[string]string{"name": name})
+}
+
 // Item Handlers
 func searchItemsHandler(w http.ResponseWriter, r *http.Request) {
 	query := strings.ToLower(r.URL.Query().Get("q"))
@@ -1328,6 +1346,7 @@ func main() {
 	// Auth routes
 	mux.HandleFunc("/signup", enableCors(signupHandler))
 	mux.HandleFunc("/login", enableCors(loginHandler))
+	mux.HandleFunc("/users/", enableCors(authMiddleware(getUserNameHandler)))
 
 	// Protected routes
 	mux.HandleFunc("/user/items", authMiddleware(getUserItemsHandler))

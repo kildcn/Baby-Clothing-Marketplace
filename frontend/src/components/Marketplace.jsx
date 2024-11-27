@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import NotificationSystem from '../components/NotificationSystem';
 
 export default function Marketplace() {
   // Core state
@@ -273,22 +274,28 @@ export default function Marketplace() {
     <div className="container mx-auto p-4">
       {/* Header with auth buttons */}
       <div className="flex justify-between items-center mb-6">
-        <h1 className="text-3xl font-bold">Unisex Clothes Marketplace</h1>
-        <div className="flex gap-4">
-          {token ? (
-            <>
-              <button
-                onClick={() => window.location.href = '/dashboard'}
-                className="bg-blue-500 text-white px-4 py-2 rounded"
-              >
-                Dashboard
-              </button>
-              <button
-                onClick={logout}
-                className="bg-red-500 text-white px-4 py-2 rounded"
-              >
-                Logout
-              </button>
+  <div className="flex items-center gap-4">
+    <h1 className="text-3xl font-bold">Unisex Clothes Marketplace</h1>
+    {currentUser && (
+      <p className="text-gray-600">Welcome, {currentUser.name}!</p>
+    )}
+  </div>
+  <div className="flex gap-4 items-center">
+    {token ? (
+      <>
+        <NotificationSystem />
+        <button
+          onClick={() => window.location.href = '/dashboard'}
+          className="bg-blue-500 text-white px-4 py-2 rounded"
+        >
+          Dashboard
+        </button>
+        <button
+          onClick={logout}
+          className="bg-red-500 text-white px-4 py-2 rounded"
+        >
+          Logout
+        </button>
             </>
           ) : (
             <div className="flex gap-2">
