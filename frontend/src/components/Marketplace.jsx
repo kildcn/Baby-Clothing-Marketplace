@@ -82,9 +82,25 @@ export default function Marketplace() {
         body: JSON.stringify(loginData)
       });
 
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(error);
+      }
+
       const data = await response.json();
+
+      // Store the full user data in localStorage
       localStorage.setItem('token', data.token);
+      localStorage.setItem('user_id', data.user_id);
+      localStorage.setItem('name', data.name);
+
+      // Update the state
       setToken(data.token);
+      setCurrentUser({
+        id: data.user_id,
+        name: data.name,
+      });
+
       setShowLogin(false);
       alert('Login successful!');
     } catch (error) {
