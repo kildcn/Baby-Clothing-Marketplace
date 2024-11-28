@@ -5,152 +5,80 @@ import { useNavigate } from 'react-router-dom';
 const NotificationSystem = () => {
   const [notifications, setNotifications] = useState([]);
   const [showNotifications, setShowNotifications] = useState(false);
+  const [currentUser, setCurrentUser] = useState(null);
   const token = localStorage.getItem('token');
-  const userId = localStorage.getItem('user_id');
   const navigate = useNavigate();
 
-  const getSeenMessagesKey = () => `seenMessages_${userId}`;
+  useEffect(() => {
+    const fetchCurrentUser = async () => {
+      if (!token) return;
+      try {
+        const response = await fetch('http://localhost:8080/user/current', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const userData = await response.json();
+        setCurrentUser(userData);
+        localStorage.setItem('user_id', userData.id);
+      } catch (error) {
+        console.error('Error fetching user data:', error);
+      }
+    };
+    fetchCurrentUser();
+  }, [token]);
+
+  const getSeenMessagesKey = () => `seenMessages_${currentUser?.id}`;
 
   const markMessageAsSeen = async (orderId) => {
     const key = getSeenMessagesKey();
     const seenMessages = JSON.parse(localStorage.getItem(key) || '[]');
 
     try {
-      const messagesResponse = await fetch(`http://localhost:8080/orders/${orderId}/messages`, {
-        headers: { 'Authorization': `Bearer ${token}` }
+      const response = await fetch(`http://localhost:8080/messages/seen`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ order_id: orderId })
       });
-      const messages = await messagesResponse.json();
 
-      // Find the latest message in current notifications for this order
+      if (!response.ok) throw new Error('Failed to mark messages as seen');
+
       const orderNotification = notifications.find(n => n.orderId === orderId);
       if (!orderNotification) return;
 
-      // Mark all messages up to this timestamp as seen
-      const latestTimestamp = new Date(orderNotification.timestamp);
-      const messageIdsToMark = messages
-        .filter(msg => new Date(msg.created_at) <= latestTimestamp)
-        .map(msg => msg.id);
-
-      const updatedSeenMessages = [...new Set([...seenMessages, ...messageIdsToMark])];
+      const updatedSeenMessages = [...seenMessages, orderNotification.id];
       localStorage.setItem(key, JSON.stringify(updatedSeenMessages));
     } catch (error) {
       console.error('Error marking messages as seen:', error);
     }
   };
 
-  const isMessageSeen = (messageId) => {
-    const key = getSeenMessagesKey();
-    const seenMessages = JSON.parse(localStorage.getItem(key) || '[]');
-    return seenMessages.includes(messageId);
-  };
-
   const checkForNewNotifications = async () => {
-    if (!token || !userId) return;
+    if (!token || !currentUser) return;
 
     try {
-      const ordersResponse = await fetch('http://localhost:8080/user/orders', {
+      const response = await fetch('http://localhost:8080/messages/unread', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      const orders = await ordersResponse.json();
+      const unreadMessages = await response.json();
 
-      const allNotifications = [];
+      const newNotifications = unreadMessages?.map(msg => ({
+        id: msg.id,
+        orderId: msg.order_id,
+        title: `New message${msg.count > 1 ? 's' : ''} in Order #${msg.order_id}`,
+        message: msg.latest_message.slice(0, 50) + (msg.latest_message.length > 50 ? '...' : ''),
+        timestamp: msg.latest_timestamp,
+        messageCount: msg.count
+      })) || [];
 
-      for (const order of orders) {
-        // Check if user is involved in this order
-        const isBuyer = order.user_id === userId;
-        const isSeller = order.items.some(item => item.seller_id === userId);
-
-        if (!isBuyer && !isSeller) continue;
-
-        const messagesResponse = await fetch(`http://localhost:8080/orders/${order.id}/messages`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        const messages = await messagesResponse.json();
-
-        console.log('Processing order:', {
-          orderId: order.id,
-          isBuyer,
-          isSeller,
-          userId,
-          orderUserId: order.user_id,
-          sellerIds: order.items.map(item => item.seller_id)
-        });
-
-        // Filter for unread messages where user is recipient
-        const unseenMessages = messages.filter(msg => {
-          // Skip seen messages first
-          if (isMessageSeen(msg.id)) {
-            console.log('Skipping seen message:', msg.id);
-            return false;
-          }
-
-          // If user is buyer, only show seller messages
-          if (isBuyer) {
-            const isFromSeller = order.items.some(item => item.seller_id === msg.sender_id);
-            console.log('Buyer message check:', {
-              messageId: msg.id,
-              senderId: msg.sender_id,
-              isFromSeller,
-              isSentByCurrentUser: msg.sender_id === userId
-            });
-            return isFromSeller && msg.sender_id !== userId;
-          }
-
-          // If user is seller, only show buyer messages
-          if (isSeller) {
-            const isFromBuyer = msg.sender_id === order.user_id;
-            console.log('Seller message check:', {
-              messageId: msg.id,
-              senderId: msg.sender_id,
-              buyerId: order.user_id,
-              isFromBuyer,
-              isSentByCurrentUser: msg.sender_id === userId
-            });
-            return isFromBuyer && msg.sender_id !== userId;
-          }
-
-          return false;
-        });
-
-        if (unseenMessages.length > 0) {
-          // Sort messages by date (newest first)
-          const sortedMessages = unseenMessages.sort((a, b) =>
-            new Date(b.created_at) - new Date(a.created_at)
-          );
-
-          const latestMessage = sortedMessages[0];
-          console.log('Adding notification:', {
-            messageId: latestMessage.id,
-            orderId: order.id,
-            messageCount: sortedMessages.length
-          });
-
-          allNotifications.push({
-            id: latestMessage.id,
-            title: `New message${sortedMessages.length > 1 ? 's' : ''} in Order #${order.id}`,
-            message: latestMessage.message.slice(0, 50) + (latestMessage.message.length > 50 ? '...' : ''),
-            type: 'message',
-            orderId: order.id,
-            timestamp: new Date(latestMessage.created_at).toISOString(),
-            messageCount: sortedMessages.length
-          });
-        }
-      }
-
-      if (allNotifications.length > 0) {
-        console.log('Setting notifications:', allNotifications);
-        setNotifications(
-          allNotifications
-            .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-            .slice(0, 10)
-        );
-      }
+      setNotifications(newNotifications);
     } catch (error) {
       console.error('Error checking notifications:', error);
     }
   };
 
-  const clearNotifications = async () => {
+  const clearAllNotifications = async () => {
     for (const notification of notifications) {
       await markMessageAsSeen(notification.orderId);
     }
@@ -158,30 +86,20 @@ const NotificationSystem = () => {
     setShowNotifications(false);
   };
 
+  useEffect(() => {
+    if (currentUser) {
+      checkForNewNotifications();
+      const interval = setInterval(checkForNewNotifications, 30000);
+      return () => clearInterval(interval);
+    }
+  }, [currentUser]);
+
   const handleNotificationClick = async (notification) => {
     await markMessageAsSeen(notification.orderId);
     setNotifications(prev => prev.filter(n => n.orderId !== notification.orderId));
-
-    if (notification.orderId) {
-      navigate('/dashboard', {
-        state: {
-          openOrder: notification.orderId,
-          scrollToMessages: true
-        }
-      });
-    }
-
+    navigate('/dashboard', { state: { openOrder: notification.orderId, scrollToMessages: true }});
     setShowNotifications(false);
   };
-
-  useEffect(() => {
-    console.log('Auth State:', {
-      token: localStorage.getItem('token'),
-      userId: localStorage.getItem('user_id'),
-      name: localStorage.getItem('name'),
-      email: localStorage.getItem('email')
-    });
-  }, []);
 
   return (
     <div className="relative">
@@ -203,7 +121,7 @@ const NotificationSystem = () => {
             <h3 className="font-semibold">Notifications</h3>
             {notifications.length > 0 && (
               <button
-                onClick={clearNotifications}
+                onClick={clearAllNotifications}
                 className="text-sm text-gray-500 hover:text-gray-700"
               >
                 Clear all
@@ -238,6 +156,6 @@ const NotificationSystem = () => {
       )}
     </div>
   );
-};
+ };
 
-export default NotificationSystem;
+ export default NotificationSystem;

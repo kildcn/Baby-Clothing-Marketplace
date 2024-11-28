@@ -87,6 +87,14 @@ type Message struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type UnreadMessage struct {
+	OrderID       string    `json:"order_id"`
+	ID            string    `json:"id"`
+	LatestMessage string    `json:"latest_message"`
+	Timestamp     time.Time `json:"latest_timestamp"`
+	Count         int       `json:"count"`
+}
+
 // Constants
 const (
 	maxFileSize = 10 << 20 // 10MB
@@ -260,6 +268,24 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		"user_id": user.ID,
 		"name":    user.Name,
 	})
+}
+
+func getCurrentUserHandler(w http.ResponseWriter, r *http.Request) {
+	userID, _ := getUserIDFromContext(r.Context())
+
+	var user User
+	err := db.QueryRow(`
+			SELECT id, name, email
+			FROM users
+			WHERE id = $1`,
+		userID).Scan(&user.ID, &user.Name, &user.Email)
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	sendJSON(w, user)
 }
 
 func getUserNameHandler(w http.ResponseWriter, r *http.Request) {
@@ -727,6 +753,96 @@ func getUserAddressesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sendJSON(w, addresses)
+}
+
+func getUnreadMessagesHandler(w http.ResponseWriter, r *http.Request) {
+	userID, _ := getUserIDFromContext(r.Context())
+
+	type UnreadMessage struct {
+		OrderID       string    `json:"order_id"`
+		ID            string    `json:"id"`
+		LatestMessage string    `json:"latest_message"`
+		Timestamp     time.Time `json:"latest_timestamp"`
+		Count         int       `json:"count"`
+	}
+
+	rows, err := db.Query(`
+			SELECT
+					m.order_id,
+					m.id,
+					m.message as latest_message,
+					m.created_at as latest_timestamp,
+					COUNT(*) OVER (PARTITION BY m.order_id) as message_count
+			FROM messages m
+			LEFT JOIN message_seen ms ON m.id = ms.message_id AND ms.user_id = $1
+			JOIN orders o ON m.order_id = o.id
+			WHERE ms.id IS NULL
+			AND m.sender_id != $1
+			AND (o.user_id = $1 OR EXISTS (
+					SELECT 1 FROM order_items oi
+					JOIN items i ON oi.item_id = i.id
+					WHERE oi.order_id = o.id AND i.seller_id = $1
+			))
+			AND m.created_at = (
+					SELECT MAX(created_at)
+					FROM messages
+					WHERE order_id = m.order_id
+			)
+			ORDER BY m.created_at DESC`,
+		userID)
+
+	if err != nil {
+		log.Printf("Query error: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var messages []UnreadMessage
+	for rows.Next() {
+		var msg UnreadMessage
+		if err := rows.Scan(&msg.OrderID, &msg.ID, &msg.LatestMessage, &msg.Timestamp, &msg.Count); err != nil {
+			log.Printf("Scan error: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		messages = append(messages, msg)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(messages); err != nil {
+		log.Printf("Encode error: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+}
+
+func markMessagesAsSeenHandler(w http.ResponseWriter, r *http.Request) {
+	userID, _ := getUserIDFromContext(r.Context())
+	var req struct {
+		OrderID string `json:"order_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	_, err := db.Exec(`
+			INSERT INTO message_seen (message_id, user_id)
+			SELECT m.id, $1
+			FROM messages m
+			WHERE m.order_id = $2 AND NOT EXISTS (
+					SELECT 1 FROM message_seen ms
+					WHERE ms.message_id = m.id AND ms.user_id = $1
+			)`,
+		userID, req.OrderID)
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 // Order Handlers
@@ -1347,6 +1463,7 @@ func main() {
 	mux.HandleFunc("/signup", enableCors(signupHandler))
 	mux.HandleFunc("/login", enableCors(loginHandler))
 	mux.HandleFunc("/users/", enableCors(authMiddleware(getUserNameHandler)))
+	mux.HandleFunc("/messages/unread", enableCors(authMiddleware(getUnreadMessagesHandler)))
 
 	// Protected routes
 	mux.HandleFunc("/user/items", authMiddleware(getUserItemsHandler))
@@ -1359,6 +1476,8 @@ func main() {
 	mux.HandleFunc("/cart", authMiddleware(viewCartHandler))
 	mux.HandleFunc("/cart/remove", authMiddleware(removeFromCartHandler))
 	mux.HandleFunc("/checkout", authMiddleware(checkoutHandler))
+	mux.HandleFunc("/user/current", authMiddleware(getCurrentUserHandler))
+	mux.HandleFunc("/messages/seen", enableCors(authMiddleware(markMessagesAsSeenHandler)))
 	mux.HandleFunc("/orders/", enableCors(authMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/messages") {
 			switch r.Method {

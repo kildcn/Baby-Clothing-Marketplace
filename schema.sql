@@ -101,6 +101,14 @@ CREATE TABLE IF NOT EXISTS messages (
     CONSTRAINT chk_message_not_empty CHECK (message <> '')
 );
 
+CREATE TABLE IF NOT EXISTS message_seen (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    message_id UUID REFERENCES messages(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES users(id),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(message_id, user_id)
+);
+
 -- Create indexes
 CREATE INDEX IF NOT EXISTS idx_items_seller ON items(seller_id);
 CREATE INDEX IF NOT EXISTS idx_items_category ON items(category);
@@ -112,6 +120,8 @@ CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id);
 CREATE INDEX IF NOT EXISTS idx_order_status_history_order ON order_status_history(order_id);
 CREATE INDEX IF NOT EXISTS idx_messages_order ON messages(order_id);
 CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender_id);
+CREATE INDEX IF NOT EXISTS idx_message_seen_user ON message_seen(user_id);
+CREATE INDEX IF NOT EXISTS idx_message_seen_message ON message_seen(message_id);
 
 -- Create updated_at trigger function
 CREATE OR REPLACE FUNCTION update_updated_at_column()
