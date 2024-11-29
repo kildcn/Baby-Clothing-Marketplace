@@ -531,6 +531,19 @@ func addToCartHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if user is the seller
+	var sellerID string
+	err := db.QueryRow(`SELECT seller_id FROM items WHERE id = $1`, req.ItemID).Scan(&sellerID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if sellerID == userID {
+		http.Error(w, "Cannot purchase your own item", http.StatusBadRequest)
+		return
+	}
+
 	tx, err := db.Begin()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
