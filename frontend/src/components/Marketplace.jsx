@@ -203,17 +203,19 @@ export default function Marketplace() {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          address_id: selectedAddress?.id,
-          address: !selectedAddress ? {
+          address: {
+            firstName: checkoutAddress.firstName, // Make sure these match your form fields
+            lastName: checkoutAddress.lastName,
             street: checkoutAddress.street,
             city: checkoutAddress.city,
             state: checkoutAddress.state,
-            zip_code: checkoutAddress.zipCode,
+            zipCode: checkoutAddress.zipCode,
             country: checkoutAddress.country
-          } : undefined,
+          },
           save_address: saveAddress
         })
       });
+
 
       if (!response.ok) {
         const error = await response.text();
@@ -639,121 +641,146 @@ export default function Marketplace() {
       )}
 
       {/* Checkout Modal */}
-      {showCheckout && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white p-8 rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-2xl font-bold">Checkout</h2>
-              <button onClick={() => setShowCheckout(false)} className="text-gray-500">×</button>
-            </div>
+{showCheckout && (
+  <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+    <div className="bg-white p-8 rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-2xl font-bold">Checkout</h2>
+        <button onClick={() => setShowCheckout(false)} className="text-gray-500">×</button>
+      </div>
 
-            {savedAddresses?.length > 0 && (
-              <div className="mb-6">
-                <h3 className="font-bold mb-2">Saved Addresses</h3>
-                <div className="space-y-2">
-                  {savedAddresses.map((addr) => (
-                    <div
-                      key={addr.id}
-                      className={`p-3 border rounded cursor-pointer ${
-                        selectedAddress?.id === addr.id ? 'border-blue-500' : ''
-                      }`}
-                      onClick={() => setSelectedAddress(addr)}
-                    >
-                      <p>{addr.street}</p>
-                      <p>{addr.city}, {addr.state} {addr.zipCode}</p>
-                      <p>{addr.country}</p>
-                    </div>
-                  ))}
-                </div>
+      {savedAddresses?.length > 0 && (
+        <div className="mb-6">
+          <h3 className="font-bold mb-2">Saved Addresses</h3>
+          <div className="space-y-2">
+            {savedAddresses.map((addr) => (
+              <div
+                key={addr.id}
+                className={`p-3 border rounded cursor-pointer ${
+                  selectedAddress?.id === addr.id ? 'border-blue-500' : ''
+                }`}
+                onClick={() => setSelectedAddress(addr)}
+              >
+                <p className="font-medium">{addr.firstName} {addr.lastName}</p>
+                <p>{addr.street}</p>
+                <p>{addr.city}, {addr.state} {addr.zipCode}</p>
+                <p>{addr.country}</p>
               </div>
-            )}
-
-            <form onSubmit={handleCheckout} className="space-y-4">
-              <div>
-                <label className="block mb-1">Street Address</label>
-                <input
-                  type="text"
-                  className="w-full border rounded p-2"
-                  value={checkoutAddress.street}
-                  onChange={(e) => setCheckoutAddress({...checkoutAddress, street: e.target.value})}
-                  required={!selectedAddress}
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block mb-1">City</label>
-                  <input
-                    type="text"
-                    className="w-full border rounded p-2"
-                    value={checkoutAddress.city}
-                    onChange={(e) => setCheckoutAddress({...checkoutAddress, city: e.target.value})}
-                    required={!selectedAddress}
-                  />
-                </div>
-                <div>
-                  <label className="block mb-1">State</label>
-                  <input
-                    type="text"
-                    className="w-full border rounded p-2"
-                    value={checkoutAddress.state}
-                    onChange={(e) => setCheckoutAddress({...checkoutAddress, state: e.target.value})}
-                    required={!selectedAddress}
-                  />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block mb-1">Zip Code</label>
-                  <input
-                    type="text"
-                    className="w-full border rounded p-2"
-                    value={checkoutAddress.zipCode}
-                    onChange={(e) => setCheckoutAddress({...checkoutAddress, zipCode: e.target.value})}
-                    required={!selectedAddress}
-                  />
-                </div>
-                <div>
-                  <label className="block mb-1">Country</label>
-                  <input
-                    type="text"
-                    className="w-full border rounded p-2"
-                    value={checkoutAddress.country}
-                    onChange={(e) => setCheckoutAddress({...checkoutAddress, country: e.target.value})}
-                    required={!selectedAddress}
-                  />
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  id="saveAddress"
-                  checked={saveAddress}
-                  onChange={(e) => setSaveAddress(e.target.checked)}
-                />
-                <label htmlFor="saveAddress">Save this address for future use</label>
-              </div>
-
-              <div className="border-t pt-4">
-                <h3 className="font-bold mb-2">Order Summary</h3>
-                {cartItems.map((item) => (
-                  <div key={item.id} className="flex justify-between py-2">
-                    <span>{item.title}</span>
-                    <span>${item.price}</span>
-                  </div>
-                ))}
-                <div className="border-t pt-2 mt-2 font-bold">
-                  Total: ${cartItems.reduce((sum, item) => sum + item.price, 0).toFixed(2)}
-                </div>
-              </div>
-
-              <button type="submit" className="w-full bg-blue-500 text-white py-2 rounded">
-                Place Order
-              </button>
-            </form>
+            ))}
           </div>
         </div>
       )}
+
+      <form onSubmit={handleCheckout} className="space-y-4">
+        <div>
+          <label className="block mb-1">Full Name</label>
+          <div className="grid grid-cols-2 gap-4">
+            <input
+              type="text"
+              className="border rounded p-2"
+              value={checkoutAddress.firstName}
+              onChange={(e) => setCheckoutAddress({...checkoutAddress, firstName: e.target.value})}
+              placeholder="First Name"
+              required={!selectedAddress}
+            />
+            <input
+              type="text"
+              className="border rounded p-2"
+              value={checkoutAddress.lastName}
+              onChange={(e) => setCheckoutAddress({...checkoutAddress, lastName: e.target.value})}
+              placeholder="Last Name"
+              required={!selectedAddress}
+            />
+          </div>
+        </div>
+
+        <div>
+          <label className="block mb-1">Street Address</label>
+          <input
+            type="text"
+            className="w-full border rounded p-2"
+            value={checkoutAddress.street}
+            onChange={(e) => setCheckoutAddress({...checkoutAddress, street: e.target.value})}
+            required={!selectedAddress}
+          />
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block mb-1">City</label>
+            <input
+              type="text"
+              className="w-full border rounded p-2"
+              value={checkoutAddress.city}
+              onChange={(e) => setCheckoutAddress({...checkoutAddress, city: e.target.value})}
+              required={!selectedAddress}
+            />
+          </div>
+          <div>
+            <label className="block mb-1">State</label>
+            <input
+              type="text"
+              className="w-full border rounded p-2"
+              value={checkoutAddress.state}
+              onChange={(e) => setCheckoutAddress({...checkoutAddress, state: e.target.value})}
+              required={!selectedAddress}
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block mb-1">Zip Code</label>
+            <input
+              type="text"
+              className="w-full border rounded p-2"
+              value={checkoutAddress.zipCode}
+              onChange={(e) => setCheckoutAddress({...checkoutAddress, zipCode: e.target.value})}
+              required={!selectedAddress}
+            />
+          </div>
+          <div>
+            <label className="block mb-1">Country</label>
+            <input
+              type="text"
+              className="w-full border rounded p-2"
+              value={checkoutAddress.country}
+              onChange={(e) => setCheckoutAddress({...checkoutAddress, country: e.target.value})}
+              required={!selectedAddress}
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            id="saveAddress"
+            checked={saveAddress}
+            onChange={(e) => setSaveAddress(e.target.checked)}
+          />
+          <label htmlFor="saveAddress">Save this address for future use</label>
+        </div>
+
+        <div className="border-t pt-4">
+          <h3 className="font-bold mb-2">Order Summary</h3>
+          {cartItems.map((item) => (
+            <div key={item.id} className="flex justify-between py-2">
+              <span>{item.title}</span>
+              <span>${item.price}</span>
+            </div>
+          ))}
+          <div className="border-t pt-2 mt-2 font-bold">
+            Total: ${cartItems.reduce((sum, item) => sum + item.price, 0).toFixed(2)}
+          </div>
+        </div>
+
+        <button type="submit" className="w-full bg-blue-500 text-white py-2 rounded hover:bg-blue-600">
+          Place Order
+        </button>
+      </form>
+    </div>
+  </div>
+)}
 
       {/* Order Confirmation Modal */}
       {orderConfirmation && (

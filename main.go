@@ -70,6 +70,8 @@ type OrderStatus struct {
 type Address struct {
 	ID        string    `json:"id"`
 	UserID    string    `json:"user_id"`
+	FirstName string    `json:"first_name"`
+	LastName  string    `json:"last_name"`
 	Street    string    `json:"street"`
 	City      string    `json:"city"`
 	State     string    `json:"state"`
@@ -393,6 +395,19 @@ func searchItemsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sendJSON(w, items)
+}
+
+func createOrderNotification(orderID, userID, message string) error {
+	_, err := db.Exec(`
+			INSERT INTO notifications (
+					user_id,
+					type,
+					reference_id,
+					message,
+					read
+			) VALUES ($1, 'order_status', $2, $3, false)`,
+		userID, orderID, message)
+	return err
 }
 
 func createItemWithImagesHandler(w http.ResponseWriter, r *http.Request) {
@@ -858,6 +873,90 @@ func markMessagesAsSeenHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+func getUnreadNotificationsHandler(w http.ResponseWriter, r *http.Request) {
+	userID, _ := getUserIDFromContext(r.Context())
+
+	rows, err := db.Query(`
+			SELECT id, type, reference_id, message, created_at
+			FROM notifications
+			WHERE user_id = $1 AND read = false
+			ORDER BY created_at DESC`,
+		userID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var notifications []struct {
+		ID          string    `json:"id"`
+		Type        string    `json:"type"`
+		ReferenceID string    `json:"reference_id"`
+		Message     string    `json:"message"`
+		CreatedAt   time.Time `json:"created_at"`
+	}
+
+	for rows.Next() {
+		var n struct {
+			ID          string    `json:"id"`
+			Type        string    `json:"type"`
+			ReferenceID string    `json:"reference_id"`
+			Message     string    `json:"message"`
+			CreatedAt   time.Time `json:"created_at"`
+		}
+		if err := rows.Scan(&n.ID, &n.Type, &n.ReferenceID, &n.Message, &n.CreatedAt); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		notifications = append(notifications, n)
+	}
+
+	sendJSON(w, notifications)
+}
+
+func markNotificationAsSeenHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, _ := getUserIDFromContext(r.Context())
+	notificationID := strings.TrimPrefix(r.URL.Path, "/notifications/seen/")
+
+	_, err := db.Exec(`
+			UPDATE notifications
+			SET read = true
+			WHERE id = $1 AND user_id = $2`,
+		notificationID, userID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func clearNotificationsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, _ := getUserIDFromContext(r.Context())
+
+	_, err := db.Exec(`
+			UPDATE notifications
+			SET read = true
+			WHERE user_id = $1 AND read = false`,
+		userID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
 // Order Handlers
 func checkoutHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -889,10 +988,10 @@ func checkoutHandler(w http.ResponseWriter, r *http.Request) {
 	// Calculate total from cart items
 	var total float64
 	err = tx.QueryRow(`
-      SELECT COALESCE(SUM(i.price), 0)
-      FROM cart_items c
-      JOIN items i ON c.item_id = i.id
-      WHERE c.user_id = $1`,
+			SELECT COALESCE(SUM(i.price), 0)
+			FROM cart_items c
+			JOIN items i ON c.item_id = i.id
+			WHERE c.user_id = $1`,
 		userID).Scan(&total)
 	if err != nil {
 		log.Printf("Error calculating total: %v", err)
@@ -900,30 +999,49 @@ func checkoutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Handle address
+	// Always create address for order tracking
 	var addressID string
-	if req.SaveAddress {
-		log.Printf("Saving address for user %s", userID)
-		err = tx.QueryRow(`
-          INSERT INTO addresses (user_id, street, city, state, zip_code, country, is_default)
-          VALUES ($1, $2, $3, $4, $5, $6, false)
-          RETURNING id`,
-			userID, req.Address.Street, req.Address.City, req.Address.State,
-			req.Address.ZipCode, req.Address.Country).Scan(&addressID)
-		if err != nil {
-			log.Printf("Error saving address: %v", err)
-			http.Error(w, "Failed to save address", http.StatusInternalServerError)
-			return
-		}
+	log.Printf("Creating address for order with name: %s %s",
+		req.Address.FirstName, req.Address.LastName)
+	err = tx.QueryRow(`
+			INSERT INTO addresses (
+					user_id,
+					first_name,
+					last_name,
+					street,
+					city,
+					state,
+					zip_code,
+					country,
+					is_default
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			RETURNING id`,
+		userID,
+		req.Address.FirstName,
+		req.Address.LastName,
+		req.Address.Street,
+		req.Address.City,
+		req.Address.State,
+		req.Address.ZipCode,
+		req.Address.Country,
+		req.SaveAddress).Scan(&addressID)
+	if err != nil {
+		log.Printf("Error saving address: %v", err)
+		http.Error(w, "Failed to save address", http.StatusInternalServerError)
+		return
 	}
 
 	// Create order
 	var orderID string
 	log.Printf("Creating order for user %s", userID)
 	err = tx.QueryRow(`
-      INSERT INTO orders (user_id, address_id, total, status)
-      VALUES ($1, $2, $3, 'pending')
-      RETURNING id`,
+			INSERT INTO orders (
+					user_id,
+					address_id,
+					total,
+					status
+			) VALUES ($1, $2, $3, 'pending')
+			RETURNING id`,
 		userID, addressID, total).Scan(&orderID)
 	if err != nil {
 		log.Printf("Error creating order: %v", err)
@@ -934,11 +1052,11 @@ func checkoutHandler(w http.ResponseWriter, r *http.Request) {
 	// Create order items
 	log.Printf("Creating order items for user %s", userID)
 	_, err = tx.Exec(`
-      INSERT INTO order_items (order_id, item_id, price_at_time)
-      SELECT $1, i.id, i.price
-      FROM cart_items c
-      JOIN items i ON c.item_id = i.id
-      WHERE c.user_id = $2`,
+			INSERT INTO order_items (order_id, item_id, price_at_time)
+			SELECT $1, i.id, i.price
+			FROM cart_items c
+			JOIN items i ON c.item_id = i.id
+			WHERE c.user_id = $2`,
 		orderID, userID)
 	if err != nil {
 		log.Printf("Error creating order items: %v", err)
@@ -949,17 +1067,24 @@ func checkoutHandler(w http.ResponseWriter, r *http.Request) {
 	// Update item quantities and status
 	log.Printf("Updating inventory for order %s", orderID)
 	_, err = tx.Exec(`
-      UPDATE items i
-      SET quantity = quantity - 1,
-          status = CASE WHEN quantity - 1 <= 0 THEN 'sold'::item_status_enum
-                       ELSE status END
-      FROM order_items oi
-      WHERE oi.item_id = i.id AND oi.order_id = $1`,
+			UPDATE items i
+			SET quantity = quantity - 1,
+					status = CASE
+							WHEN quantity - 1 <= 0 THEN 'sold'::item_status_enum
+							ELSE status
+					END
+			FROM order_items oi
+			WHERE oi.item_id = i.id AND oi.order_id = $1`,
 		orderID)
 	if err != nil {
 		log.Printf("Error updating inventory: %v", err)
 		http.Error(w, "Failed to update inventory", http.StatusInternalServerError)
 		return
+	}
+
+	// Notify sellers
+	if err := notifySellers(tx, userID, orderID); err != nil {
+		log.Printf("Error notifying sellers: %v", err)
 	}
 
 	// Clear cart
@@ -986,6 +1111,40 @@ func checkoutHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
+}
+
+func notifySellers(tx *sql.Tx, userID, orderID string) error {
+	log.Printf("Starting seller notifications for order %s", orderID)
+
+	rows, err := tx.Query(`
+			SELECT DISTINCT i.seller_id
+			FROM cart_items c
+			JOIN items i ON c.item_id = i.id
+			WHERE c.user_id = $1`,
+		userID)
+	if err != nil {
+		log.Printf("Error fetching sellers: %v", err)
+		return fmt.Errorf("error fetching sellers: %v", err)
+	}
+	defer rows.Close()
+
+	var notifiedCount int
+	for rows.Next() {
+		var sellerID string
+		if err := rows.Scan(&sellerID); err != nil {
+			log.Printf("Error scanning seller ID: %v", err)
+			continue
+		}
+		notificationMsg := fmt.Sprintf("New order #%s received", orderID)
+		if err := createOrderNotification(orderID, sellerID, notificationMsg); err != nil {
+			log.Printf("Error creating notification for seller %s: %v", sellerID, err)
+		} else {
+			notifiedCount++
+		}
+	}
+
+	log.Printf("Notified %d sellers for order %s", notifiedCount, orderID)
+	return rows.Err()
 }
 
 func getUserOrdersHandler(w http.ResponseWriter, r *http.Request) {
@@ -1126,46 +1285,56 @@ func updateOrderStatusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	// Verify user is either the buyer or seller
-	var isAuthorized bool
-	err = tx.QueryRow(`
-      SELECT EXISTS (
-          SELECT 1 FROM orders o
-          JOIN order_items oi ON o.id = oi.order_id
-          JOIN items i ON oi.item_id = i.id
-          WHERE o.id = $1 AND (o.user_id = $2 OR i.seller_id = $2)
-      )`,
-		orderID, userID).Scan(&isAuthorized)
-
+	var buyerID string
+	err = tx.QueryRow(`SELECT user_id FROM orders WHERE id = $1`, orderID).Scan(&buyerID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	if !isAuthorized {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-
 	// Update order status
 	_, err = tx.Exec(`
-      UPDATE orders
-      SET status = $1, updated_at = CURRENT_TIMESTAMP
-      WHERE id = $2`,
+			UPDATE orders
+			SET status = $1, updated_at = CURRENT_TIMESTAMP
+			WHERE id = $2`,
 		req.Status, orderID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Add status update to history
-	_, err = tx.Exec(`
-      INSERT INTO order_status_history (order_id, status, message, created_by)
-      VALUES ($1, $2, $3, $4)`,
-		orderID, req.Status, req.Message, userID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	// Create notification for status change
+	var notificationMsg string
+	switch req.Status {
+	case "shipped":
+		notificationMsg = fmt.Sprintf("Your order #%s has been shipped", orderID)
+	case "cancelled":
+		notificationMsg = fmt.Sprintf("Your order #%s has been cancelled. Reason: %s", orderID, req.Message)
+	case "delivered":
+		// Notify seller of delivery confirmation
+		notificationMsg = fmt.Sprintf("Order #%s has been confirmed as delivered", orderID)
+		// Create notification for seller
+		var sellerID string
+		err = tx.QueryRow(`
+        SELECT DISTINCT i.seller_id
+        FROM order_items oi
+        JOIN items i ON oi.item_id = i.id
+        WHERE oi.order_id = $1
+        LIMIT 1`, orderID).Scan(&sellerID)
+		if err == nil && sellerID != userID {
+			err = createOrderNotification(orderID, sellerID, notificationMsg)
+			if err != nil {
+				log.Printf("Error creating seller notification: %v", err)
+			}
+		}
+	}
+
+	if notificationMsg != "" && buyerID != userID {
+		err = createOrderNotification(orderID, buyerID, notificationMsg)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	if err = tx.Commit(); err != nil {
@@ -1505,6 +1674,10 @@ func main() {
 			}
 		}
 	})))
+	// Update your endpoint handlers in main() function
+	mux.HandleFunc("/notifications/unread", enableCors(authMiddleware(getUnreadNotificationsHandler)))
+	mux.HandleFunc("/notifications/seen/", enableCors(authMiddleware(markNotificationAsSeenHandler)))
+	mux.HandleFunc("/notifications/clear", enableCors(authMiddleware(clearNotificationsHandler)))
 
 	// Public routes
 	mux.HandleFunc("/items/search", enableCors(searchItemsHandler))

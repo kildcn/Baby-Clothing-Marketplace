@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS cart_items (
 CREATE TABLE IF NOT EXISTS addresses (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    first_name VARCHAR(255) NOT NULL,
+    last_name VARCHAR(255) NOT NULL,
     street TEXT NOT NULL,
     city TEXT NOT NULL,
     state TEXT NOT NULL,
@@ -101,12 +103,24 @@ CREATE TABLE IF NOT EXISTS messages (
     CONSTRAINT chk_message_not_empty CHECK (message <> '')
 );
 
+-- Create message_seen table
 CREATE TABLE IF NOT EXISTS message_seen (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     message_id UUID REFERENCES messages(id) ON DELETE CASCADE,
     user_id UUID REFERENCES users(id),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(message_id, user_id)
+);
+
+-- Create notifications table
+CREATE TABLE IF NOT EXISTS notifications (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id),
+    type VARCHAR(50) NOT NULL,
+    reference_id UUID NOT NULL,
+    message TEXT NOT NULL,
+    read BOOLEAN DEFAULT false,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Create indexes
@@ -122,6 +136,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_order ON messages(order_id);
 CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender_id);
 CREATE INDEX IF NOT EXISTS idx_message_seen_user ON message_seen(user_id);
 CREATE INDEX IF NOT EXISTS idx_message_seen_message ON message_seen(message_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at);
 
 -- Create updated_at trigger function
 CREATE OR REPLACE FUNCTION update_updated_at_column()

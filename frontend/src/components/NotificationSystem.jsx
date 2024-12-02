@@ -58,30 +58,79 @@ const NotificationSystem = () => {
     if (!token || !currentUser) return;
 
     try {
-      const response = await fetch('http://localhost:8080/messages/unread', {
+      // Check for unread messages
+      const messagesResponse = await fetch('http://localhost:8080/messages/unread', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      const unreadMessages = await response.json();
+      const unreadMessages = await messagesResponse.json();
 
-      const newNotifications = unreadMessages?.map(msg => ({
+      // Check for order notifications
+      const notificationsResponse = await fetch('http://localhost:8080/notifications/unread', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const orderNotifications = await notificationsResponse.json();
+
+      const messageNotifications = unreadMessages?.map(msg => ({
         id: msg.id,
         orderId: msg.order_id,
+        type: 'message',
         title: `New message${msg.count > 1 ? 's' : ''} in Order #${msg.order_id}`,
         message: msg.latest_message.slice(0, 50) + (msg.latest_message.length > 50 ? '...' : ''),
         timestamp: msg.latest_timestamp,
         messageCount: msg.count
       })) || [];
 
-      setNotifications(newNotifications);
+      const systemNotifications = orderNotifications?.map(note => ({
+        id: note.id,
+        type: note.type,
+        orderId: note.reference_id,
+        title: note.type === 'order_status' ? 'Order Status Update' : 'New Order',
+        message: note.message,
+        timestamp: note.created_at
+      })) || [];
+
+      setNotifications([...messageNotifications, ...systemNotifications]);
     } catch (error) {
       console.error('Error checking notifications:', error);
     }
   };
 
+  const handleNotificationClick = async (notification) => {
+    if (notification.type === 'message') {
+      await markMessageAsSeen(notification.orderId);
+    } else {
+      // Mark order notification as read
+      try {
+        await fetch(`http://localhost:8080/notifications/seen/${notification.id}`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+      } catch (error) {
+        console.error('Error marking notification as seen:', error);
+      }
+    }
+
+    setNotifications(prev => prev.filter(n => n.id !== notification.id));
+    navigate('/dashboard', { state: { openOrder: notification.orderId, scrollToMessages: true }});
+    setShowNotifications(false);
+  };
+
   const clearAllNotifications = async () => {
-    for (const notification of notifications) {
+    // Clear message notifications
+    for (const notification of notifications.filter(n => n.type === 'message')) {
       await markMessageAsSeen(notification.orderId);
     }
+
+    // Clear order notifications
+    try {
+      await fetch('http://localhost:8080/notifications/clear', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+    } catch (error) {
+      console.error('Error clearing notifications:', error);
+    }
+
     setNotifications([]);
     setShowNotifications(false);
   };
@@ -93,13 +142,6 @@ const NotificationSystem = () => {
       return () => clearInterval(interval);
     }
   }, [currentUser]);
-
-  const handleNotificationClick = async (notification) => {
-    await markMessageAsSeen(notification.orderId);
-    setNotifications(prev => prev.filter(n => n.orderId !== notification.orderId));
-    navigate('/dashboard', { state: { openOrder: notification.orderId, scrollToMessages: true }});
-    setShowNotifications(false);
-  };
 
   return (
     <div className="relative">
@@ -116,7 +158,7 @@ const NotificationSystem = () => {
       </button>
 
       {showNotifications && (
-        <div className="absolute right-0 mt-2 w-80 bg-white rounded-lg shadow-lg z-50">
+        <div className="absolute right-0 mt-2 w-96 bg-white rounded-lg shadow-lg z-50">
           <div className="p-4 border-b flex justify-between items-center">
             <h3 className="font-semibold">Notifications</h3>
             {notifications.length > 0 && (
@@ -140,7 +182,7 @@ const NotificationSystem = () => {
                 >
                   <div className="font-semibold text-sm">{notification.title}</div>
                   <p className="text-sm text-gray-600">{notification.message}</p>
-                  {notification.messageCount > 1 && (
+                  {notification.type === 'message' && notification.messageCount > 1 && (
                     <p className="text-xs text-blue-600 mt-1">
                       +{notification.messageCount - 1} more messages
                     </p>
@@ -156,6 +198,6 @@ const NotificationSystem = () => {
       )}
     </div>
   );
- };
+};
 
- export default NotificationSystem;
+export default NotificationSystem;
