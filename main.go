@@ -81,6 +81,14 @@ type Address struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type OrderItem struct {
+	ID         string  `json:"id"`
+	Title      string  `json:"title"`
+	Price      float64 `json:"price"`
+	SellerID   string  `json:"seller_id"`
+	SellerName string  `json:"seller_name"`
+}
+
 type Message struct {
 	ID        string    `json:"id"`
 	OrderID   string    `json:"order_id"`
@@ -967,8 +975,16 @@ func checkoutHandler(w http.ResponseWriter, r *http.Request) {
 	userID, _ := getUserIDFromContext(r.Context())
 
 	var req struct {
-		Address     Address `json:"address"`
-		SaveAddress bool    `json:"save_address"`
+		Address struct {
+			FirstName string `json:"firstName"`
+			LastName  string `json:"lastName"`
+			Street    string `json:"street"`
+			City      string `json:"city"`
+			State     string `json:"state"`
+			ZipCode   string `json:"zipCode"`
+			Country   string `json:"country"`
+		} `json:"address"`
+		SaveAddress bool `json:"save_address"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -985,7 +1001,6 @@ func checkoutHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	// Calculate total from cart items
 	var total float64
 	err = tx.QueryRow(`
 			SELECT COALESCE(SUM(i.price), 0)
@@ -999,7 +1014,6 @@ func checkoutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Always create address for order tracking
 	var addressID string
 	log.Printf("Creating address for order with name: %s %s",
 		req.Address.FirstName, req.Address.LastName)
@@ -1031,9 +1045,7 @@ func checkoutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create order
 	var orderID string
-	log.Printf("Creating order for user %s", userID)
 	err = tx.QueryRow(`
 			INSERT INTO orders (
 					user_id,
@@ -1049,8 +1061,6 @@ func checkoutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create order items
-	log.Printf("Creating order items for user %s", userID)
 	_, err = tx.Exec(`
 			INSERT INTO order_items (order_id, item_id, price_at_time)
 			SELECT $1, i.id, i.price
@@ -1064,8 +1074,6 @@ func checkoutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update item quantities and status
-	log.Printf("Updating inventory for order %s", orderID)
 	_, err = tx.Exec(`
 			UPDATE items i
 			SET quantity = quantity - 1,
@@ -1082,13 +1090,10 @@ func checkoutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Notify sellers
 	if err := notifySellers(tx, userID, orderID); err != nil {
 		log.Printf("Error notifying sellers: %v", err)
 	}
 
-	// Clear cart
-	log.Printf("Clearing cart for user %s", userID)
 	_, err = tx.Exec(`DELETE FROM cart_items WHERE user_id = $1`, userID)
 	if err != nil {
 		log.Printf("Error clearing cart: %v", err)
@@ -1102,15 +1107,10 @@ func checkoutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(map[string]interface{}{
+	sendJSON(w, map[string]interface{}{
 		"order_id": orderID,
 		"status":   "success",
-	}); err != nil {
-		log.Printf("Error encoding response: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
+	})
 }
 
 func notifySellers(tx *sql.Tx, userID, orderID string) error {
@@ -1156,37 +1156,41 @@ func getUserOrdersHandler(w http.ResponseWriter, r *http.Request) {
 	userID, _ := getUserIDFromContext(r.Context())
 
 	rows, err := db.Query(`
-      SELECT
-          o.id,
-          o.user_id,
-          o.status,
-          o.created_at,
-          o.updated_at,
-          a.street,
-          a.city,
-          a.state,
-          a.zip_code,
-          a.country,
-          COALESCE(
-              json_agg(
-                  json_build_object(
-                      'id', i.id,
-                      'title', i.title,
-                      'price', oi.price_at_time,
-                      'seller_id', i.seller_id,
-                      'seller_name', u.name
-                  )
-              ) FILTER (WHERE i.id IS NOT NULL),
-              '[]'::json
-          ) as items
-      FROM orders o
-      JOIN addresses a ON o.address_id = a.id
-      LEFT JOIN order_items oi ON o.id = oi.order_id
-      LEFT JOIN items i ON oi.item_id = i.id
-      LEFT JOIN users u ON i.seller_id = u.id
-      WHERE o.user_id = $1 OR i.seller_id = $1
-      GROUP BY o.id, o.user_id, a.street, a.city, a.state, a.zip_code, a.country
-      ORDER BY o.created_at DESC`,
+			SELECT
+					o.id,
+					o.user_id,
+					o.status,
+					o.created_at,
+					o.updated_at,
+					a.id as address_id,
+					a.first_name,
+					a.last_name,
+					a.street,
+					a.city,
+					a.state,
+					a.zip_code,
+					a.country,
+					COALESCE(
+							json_agg(
+									json_build_object(
+											'id', i.id,
+											'title', i.title,
+											'price', oi.price_at_time,
+											'seller_id', i.seller_id,
+											'seller_name', u.name
+									)
+							) FILTER (WHERE i.id IS NOT NULL),
+							'[]'::json
+					) as items
+			FROM orders o
+			JOIN addresses a ON o.address_id = a.id
+			LEFT JOIN order_items oi ON o.id = oi.order_id
+			LEFT JOIN items i ON oi.item_id = i.id
+			LEFT JOIN users u ON i.seller_id = u.id
+			WHERE o.user_id = $1 OR i.seller_id = $1
+			GROUP BY o.id, o.user_id, a.id, a.first_name, a.last_name, a.street, a.city,
+							 a.state, a.zip_code, a.country
+			ORDER BY o.created_at DESC`,
 		userID)
 
 	if err != nil {
@@ -1195,33 +1199,31 @@ func getUserOrdersHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	type OrderItem struct {
-		ID         string  `json:"id"`
-		Title      string  `json:"title"`
-		Price      float64 `json:"price"`
-		SellerID   string  `json:"seller_id"`
-		SellerName string  `json:"seller_name"`
+	type OrderAddress struct {
+		ID        string `json:"id"`
+		FirstName string `json:"first_name"`
+		LastName  string `json:"last_name"`
+		Street    string `json:"street"`
+		City      string `json:"city"`
+		State     string `json:"state"`
+		ZipCode   string `json:"zip_code"`
+		Country   string `json:"country"`
 	}
 
 	type Order struct {
-		ID        string    `json:"id"`
-		UserID    string    `json:"user_id"`
-		Status    string    `json:"status"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Address   struct {
-			Street  string `json:"street"`
-			City    string `json:"city"`
-			State   string `json:"state"`
-			ZipCode string `json:"zip_code"`
-			Country string `json:"country"`
-		} `json:"address"`
-		Items []OrderItem `json:"items"`
+		ID        string       `json:"id"`
+		UserID    string       `json:"user_id"`
+		Status    string       `json:"status"`
+		CreatedAt time.Time    `json:"created_at"`
+		UpdatedAt time.Time    `json:"updated_at"`
+		Address   OrderAddress `json:"address"`
+		Items     []OrderItem  `json:"items"`
 	}
 
 	var orders []Order
 	for rows.Next() {
 		var o Order
+		var addr OrderAddress
 		var itemsJSON []byte
 
 		err := rows.Scan(
@@ -1230,11 +1232,14 @@ func getUserOrdersHandler(w http.ResponseWriter, r *http.Request) {
 			&o.Status,
 			&o.CreatedAt,
 			&o.UpdatedAt,
-			&o.Address.Street,
-			&o.Address.City,
-			&o.Address.State,
-			&o.Address.ZipCode,
-			&o.Address.Country,
+			&addr.ID,
+			&addr.FirstName,
+			&addr.LastName,
+			&addr.Street,
+			&addr.City,
+			&addr.State,
+			&addr.ZipCode,
+			&addr.Country,
 			&itemsJSON,
 		)
 		if err != nil {
@@ -1242,6 +1247,7 @@ func getUserOrdersHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		o.Address = addr
 		err = json.Unmarshal(itemsJSON, &o.Items)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1256,8 +1262,7 @@ func getUserOrdersHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(orders)
+	sendJSON(w, orders)
 }
 
 func updateOrderStatusHandler(w http.ResponseWriter, r *http.Request) {

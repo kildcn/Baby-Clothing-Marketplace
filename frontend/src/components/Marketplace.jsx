@@ -25,6 +25,8 @@ export default function Marketplace() {
   // Checkout state
   const [showCheckout, setShowCheckout] = useState(false);
   const [checkoutAddress, setCheckoutAddress] = useState({
+    firstName: '',
+    lastName: '',
     street: '',
     city: '',
     state: '',
@@ -203,8 +205,8 @@ export default function Marketplace() {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          address: {
-            firstName: checkoutAddress.firstName, // Make sure these match your form fields
+          address: selectedAddress || {
+            firstName: checkoutAddress.firstName,
             lastName: checkoutAddress.lastName,
             street: checkoutAddress.street,
             city: checkoutAddress.city,
@@ -289,6 +291,12 @@ export default function Marketplace() {
       fetchSavedAddresses();
     }
   }, [showCheckout]);
+
+  useEffect(() => {
+    if (selectedAddress) {
+      setCheckoutAddress(selectedAddress);
+    }
+  }, [selectedAddress]);
 
   return (
     <div className="container mx-auto p-4">
