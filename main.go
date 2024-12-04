@@ -755,19 +755,50 @@ func saveAddressHandler(w http.ResponseWriter, r *http.Request) {
 	sendJSON(w, address)
 }
 
-func getUserAddressesHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+func deleteAddressHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	userID, _ := getUserIDFromContext(r.Context())
+	addressID := r.URL.Query().Get("id")
+
+	result, err := db.Exec(`
+			UPDATE addresses
+			SET deleted_at = CURRENT_TIMESTAMP
+			WHERE id = $1
+			AND user_id = $2
+			AND NOT EXISTS (
+					SELECT 1 FROM orders
+					WHERE address_id = addresses.id
+					AND status NOT IN ('delivered', 'cancelled')
+			)`,
+		addressID, userID)
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		http.Error(w, "Address not found or cannot be deleted (active orders exist)", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func getUserAddressesHandler(w http.ResponseWriter, r *http.Request) {
+	userID, _ := getUserIDFromContext(r.Context())
 
 	rows, err := db.Query(`
-		SELECT id, street, city, state, zip_code, country, is_default, created_at
-		FROM addresses
-		WHERE user_id = $1
-		ORDER BY is_default DESC, created_at DESC`,
+			SELECT id, street, city, state, zip_code, country, is_default, created_at
+			FROM addresses
+			WHERE user_id = $1
+			AND deleted_at IS NULL
+			ORDER BY is_default DESC, created_at DESC`,
 		userID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -789,6 +820,49 @@ func getUserAddressesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sendJSON(w, addresses)
+}
+
+func archiveOrderHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, _ := getUserIDFromContext(r.Context())
+	orderID := r.URL.Query().Get("order_id")
+
+	// If specific order ID provided, archive just that order
+	if orderID != "" {
+		_, err := db.Exec(`
+					UPDATE orders
+					SET archived = true
+					WHERE id = $1
+					AND (
+							user_id = $2
+							OR EXISTS (
+									SELECT 1 FROM order_items oi
+									JOIN items i ON oi.item_id = i.id
+									WHERE oi.order_id = orders.id
+									AND i.seller_id = $2
+							)
+					)
+					AND status IN ('delivered', 'cancelled')`,
+			orderID, userID)
+
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		// Archive all completed orders
+		_, err := db.Exec(`SELECT archive_completed_orders($1)`, userID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 func getUnreadMessagesHandler(w http.ResponseWriter, r *http.Request) {
@@ -1497,15 +1571,34 @@ func getUserItemsHandler(w http.ResponseWriter, r *http.Request) {
 	userID, _ := getUserIDFromContext(r.Context())
 
 	rows, err := db.Query(`
-		SELECT i.id, i.title, i.description, i.price, i.size, i.category,
-			   i.status, i.quantity, i.seller_id, u.name as seller_name,
-			   i.created_at, array_agg(im.image_path) as images
-		FROM items i
-		LEFT JOIN item_images im ON i.id = im.item_id
-		JOIN users u ON i.seller_id = u.id
-		WHERE i.seller_id = $1
-		GROUP BY i.id, u.name
-		ORDER BY i.created_at DESC`,
+			SELECT
+					i.id,
+					i.title,
+					i.description,
+					i.price,
+					i.size,
+					i.category,
+					get_actual_item_status(i.id) as status,
+					CASE
+							WHEN get_actual_item_status(i.id) IN ('reserved', 'delivered', 'cancelled') THEN 0
+							ELSE i.quantity
+					END as display_quantity,
+					i.seller_id,
+					u.name as seller_name,
+					i.created_at,
+					array_agg(COALESCE(im.image_path, '')) as images,
+					EXISTS (
+							SELECT 1 FROM order_items oi
+							JOIN orders o ON oi.order_id = o.id
+							WHERE oi.item_id = i.id
+							AND o.status IN ('pending', 'shipped')
+					) as has_active_order
+			FROM items i
+			LEFT JOIN item_images im ON i.id = im.item_id
+			JOIN users u ON i.seller_id = u.id
+			WHERE i.seller_id = $1
+			GROUP BY i.id, u.name
+			ORDER BY i.created_at DESC`,
 		userID)
 
 	if err != nil {
@@ -1518,10 +1611,23 @@ func getUserItemsHandler(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var item Item
 		var images []sql.NullString
+		var hasActiveOrder bool
+
 		err := rows.Scan(
-			&item.ID, &item.Title, &item.Description, &item.Price,
-			&item.Size, &item.Category, &item.Status, &item.Quantity,
-			&item.SellerID, &item.SellerName, &item.CreatedAt, pq.Array(&images))
+			&item.ID,
+			&item.Title,
+			&item.Description,
+			&item.Price,
+			&item.Size,
+			&item.Category,
+			&item.Status,
+			&item.Quantity,
+			&item.SellerID,
+			&item.SellerName,
+			&item.CreatedAt,
+			pq.Array(&images),
+			&hasActiveOrder,
+		)
 
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1530,7 +1636,7 @@ func getUserItemsHandler(w http.ResponseWriter, r *http.Request) {
 
 		item.Images = make([]string, 0)
 		for _, img := range images {
-			if img.Valid {
+			if img.Valid && img.String != "" {
 				item.Images = append(item.Images, img.String)
 			}
 		}
@@ -1557,7 +1663,32 @@ func deleteItemHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	var imagePaths []string
+	// First verify the item exists and belongs to the user
+	var exists bool
+	err = tx.QueryRow(`
+			SELECT EXISTS (
+					SELECT 1 FROM items
+					WHERE id = $1 AND seller_id = $2
+			)`, itemID, userID).Scan(&exists)
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if !exists {
+		http.Error(w, "Item not found or not authorized", http.StatusNotFound)
+		return
+	}
+
+	// Delete related cart items
+	_, err = tx.Exec(`DELETE FROM cart_items WHERE item_id = $1`, itemID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Delete from images first
 	rows, err := tx.Query("SELECT image_path FROM item_images WHERE item_id = $1", itemID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1565,6 +1696,7 @@ func deleteItemHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
+	var imagePaths []string
 	for rows.Next() {
 		var path string
 		if err := rows.Scan(&path); err != nil {
@@ -1574,12 +1706,22 @@ func deleteItemHandler(w http.ResponseWriter, r *http.Request) {
 		imagePaths = append(imagePaths, path)
 	}
 
-	result, err := tx.Exec(`
-      DELETE FROM items
-      WHERE id = $1 AND seller_id = $2`,
-		itemID, userID)
-
+	// Delete the item images
+	_, err = tx.Exec("DELETE FROM item_images WHERE item_id = $1", itemID)
 	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Delete the item
+	result, err := tx.Exec("DELETE FROM items WHERE id = $1 AND seller_id = $2", itemID, userID)
+	if err != nil {
+		if pqErr, ok := err.(*pq.Error); ok {
+			if pqErr.Code == "23503" { // Foreign key violation
+				http.Error(w, "Cannot delete item: it is part of existing orders", http.StatusBadRequest)
+				return
+			}
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1591,12 +1733,13 @@ func deleteItemHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if rowsAffected == 0 {
-		http.Error(w, "Item not found or unauthorized", http.StatusNotFound)
+		http.Error(w, "Item not found or not authorized", http.StatusNotFound)
 		return
 	}
 
+	// Delete physical image files
 	for _, path := range imagePaths {
-		os.Remove(path)
+		os.Remove(filepath.Join(".", path))
 	}
 
 	if err = tx.Commit(); err != nil {
@@ -1606,7 +1749,6 @@ func deleteItemHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 }
-
 func serveImageHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1655,10 +1797,12 @@ func main() {
 	// Protected routes
 	mux.HandleFunc("/user/items", authMiddleware(getUserItemsHandler))
 	mux.HandleFunc("/user/addresses", authMiddleware(getUserAddressesHandler))
+	mux.HandleFunc("/addresses/delete", authMiddleware(deleteAddressHandler))
 	mux.HandleFunc("/user/orders", authMiddleware(getUserOrdersHandler))
 	mux.HandleFunc("/items/create", authMiddleware(createItemWithImagesHandler))
 	mux.HandleFunc("/items/delete", authMiddleware(deleteItemHandler))
 	mux.HandleFunc("/orders/update", authMiddleware(updateOrderStatusHandler))
+	mux.HandleFunc("/orders/archive", authMiddleware(archiveOrderHandler))
 	mux.HandleFunc("/cart/add", authMiddleware(addToCartHandler))
 	mux.HandleFunc("/cart", authMiddleware(viewCartHandler))
 	mux.HandleFunc("/cart/remove", authMiddleware(removeFromCartHandler))
